@@ -90,6 +90,8 @@ function telefonoFalso(pantallas: NodoDePantalla[][], opciones: { enFrente?: boo
   const hechos: string[] = [];
   let lecturas = 0;
   let frente = 0;
+  // Reloj virtual: sólo avanza cuando se espera, así los tests no duermen de verdad.
+  let reloj = 0;
   const puertos: PuertosDeApp = {
     enFrente: async () => opciones.enFrente?.[frente++] ?? true,
     arbol: async () => pantallas[Math.min(lecturas++, pantallas.length - 1)]!,
@@ -97,7 +99,8 @@ function telefonoFalso(pantallas: NodoDePantalla[][], opciones: { enFrente?: boo
     escribir: async (t) => (hechos.push(`escribir ${t}`), { omitidos: /[^\x20-\x7E]/.test(t) }),
     tecla: async (t) => void hechos.push(`tecla ${t}`),
     deslizar: async (d, h) => void hechos.push(`deslizar ${d.y}->${h.y}`),
-    dormir: async () => {},
+    dormir: async (ms) => void (reloj += ms),
+    ahora: () => reloj,
   };
   return { puertos, hechos };
 }
@@ -162,6 +165,23 @@ describe("ejecutar los pasos", () => {
     const r = await ejecutarPasos([{ accion: "esperar_texto", texto: "Subida", segundos: 2, exacto: false }], puertos);
     expect(r.ok).toBe(false);
     expect(r.fallo).toMatch(/Subida/);
+  });
+
+  // Medido en un S24: cada lectura del árbol tarda ~4 s. Con la espera contada
+  // en vueltas, «esperar 5 s» tardó 28 s. Manda el reloj, no las vueltas.
+  it("esperar_texto respeta los segundos aunque leer la pantalla sea lento", async () => {
+    let reloj = 0;
+    const { puertos } = telefonoFalso([inicio]);
+    puertos.ahora = () => reloj;
+    puertos.dormir = async (ms) => void (reloj += ms);
+    const arbol = puertos.arbol;
+    let lecturas = 0;
+    puertos.arbol = async () => ((reloj += 4_000), lecturas++, arbol());
+    const r = await ejecutarPasos([{ accion: "esperar_texto", texto: "Subida", segundos: 5, exacto: false }], puertos);
+    expect(r.ok).toBe(false);
+    // Dos lecturas caben en 5 s (más la de la pantalla final al cortar, que ya está leída).
+    expect(lecturas).toBeLessThanOrEqual(3);
+    expect(reloj).toBeLessThanOrEqual(10_000);
   });
 
   it("avisa si se omitieron tildes al escribir (sin espejo, adb sólo escribe ASCII)", async () => {

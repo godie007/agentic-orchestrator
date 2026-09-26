@@ -117,6 +117,8 @@ export interface PuertosDeApp {
   tecla(tecla: "atras" | "enter" | "tab" | "borrar"): Promise<void>;
   deslizar(desde: { x: number; y: number }, hasta: { x: number; y: number }, ms: number): Promise<void>;
   dormir(ms: number): Promise<void>;
+  /** El reloj, en ms: las esperas se cuentan con él y no en vueltas (leer el árbol tarda ~4 s en un teléfono real). */
+  ahora(): number;
 }
 
 /** «abajo» es ver lo que está más abajo: el dedo va hacia arriba. */
@@ -179,17 +181,20 @@ export async function ejecutarPasos(
         break;
       }
       case "esperar_texto": {
-        const vueltas = Math.max(1, Math.ceil((p.segundos * 1000) / INTERVALO_ESPERA_MS));
+        const limite = puertos.ahora() + p.segundos * 1000;
         let anterior: number | null = null;
         let quieto = false;
-        for (let k = 0; k < vueltas && !quieto; k++) {
+        for (;;) {
           const r = ubicarNodo(await leer(), { texto: p.texto, n: 1, exacto: p.exacto });
           // Visible en dos lecturas seguidas en el mismo lugar: ya no se está moviendo.
-          if (r.ok && anterior != null && Math.abs(r.y - anterior) < 0.005) quieto = true;
-          else {
-            anterior = r.ok ? r.y : null;
-            await puertos.dormir(INTERVALO_ESPERA_MS);
+          if (r.ok && anterior != null && Math.abs(r.y - anterior) < 0.005) {
+            quieto = true;
+            break;
           }
+          anterior = r.ok ? r.y : null;
+          const resta = limite - puertos.ahora();
+          if (resta <= 0) break;
+          await puertos.dormir(Math.min(INTERVALO_ESPERA_MS, resta));
         }
         if (!quieto) return cortar(i, p, `«${p.texto}» no apareció (o no se quedó quieto) en ${p.segundos} s. Se ve: ${queSeVe(ultima ?? [])}.`);
         bitacora.push(`${i + 1}. ${describir(p)} → visible`);

@@ -476,6 +476,7 @@ export function crearTelefonoStorage(deps: DepsDepuracion): TelefonoStorage {
           tecla: (tecla) => deps.dispositivos.tecla(o.serial, tecla),
           deslizar: (desde, hasta, ms) => deps.dispositivos.deslizar(o.serial, desde, hasta, ms),
           dormir,
+          ahora: () => Date.now(),
         });
         return {
           ok: true,
