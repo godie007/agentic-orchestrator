@@ -1,3 +1,4 @@
+import { HERRAMIENTAS_DE_TELEFONO } from "@orq/tools";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
@@ -26,7 +27,7 @@ import type { ServiciosVivos } from "./servicios.js";
  */
 
 /** Las herramientas de código, por nombre. Otorgar alguna es "este rol programa". */
-export const HERRAMIENTAS_DE_CODIGO = new Set([
+export const HERRAMIENTAS_DE_CODIGO = new Set<string>([
   "crear_repositorio",
   "instalar_dependencia",
   "listar_repositorios",
@@ -43,6 +44,8 @@ export const HERRAMIENTAS_DE_CODIGO = new Set([
   "solicitar_comando",
   "servicios",
   "probar_servicio",
+  // Depurar la app móvil en el teléfono: sólo se registran si hay adb.
+  ...HERRAMIENTAS_DE_TELEFONO,
 ]);
 
 /** Pasado esto, un arriendo se considera abandonado: un turno no dura tanto. */
@@ -489,6 +492,7 @@ export async function abrirTurnoDeCodigo(
     );
   }
   bloques.push(...(await bloqueDeBaseDeDatos(deps, role, dir)));
+  bloques.push(...bloqueDeTelefono(deps, role, lista));
   bloques.push(
     [
       "Cómo se trabaja acá:",
@@ -612,6 +616,35 @@ async function bloqueDeBaseDeDatos(deps: DepsCodigo, role: Role, dir: string): P
       "- Después de migrar: get_advisors (security) para ver que no quedó una tabla sin RLS, y si el código usa tipos generados, generate_typescript_types.",
     ]
       .filter(Boolean)
+      .join("\n"),
+  ];
+}
+
+/**
+ * Si el repo tiene una app móvil y el rol tiene las herramientas del teléfono,
+ * cuándo usarlas. Va en el resumen de cada turno y no sólo en el prompt de un
+ * rol: el prompt se guarda al crear el rol, así que uno creado antes de que
+ * existieran estas herramientas no se enteraba de que las tenía.
+ */
+function bloqueDeTelefono(deps: DepsCodigo, role: Role, repos: Repositorio[]): string[] {
+  if (!repos.some((r) => r.servicios.some((s) => s.tipo === "movil"))) return [];
+  const propias = new Set(deps.store.listTools(deps.companyId).filter((t) => role.toolIds.includes(t.id)).map((t) => t.name));
+  const tiene = HERRAMIENTAS_DE_TELEFONO.filter((n) => propias.has(n));
+  if (tiene.length === 0) return [];
+  return [
+    [
+      "## App móvil en el teléfono",
+      "Hay un teléfono Android con la app de este repo (build de desarrollo, conectada al Metro de la sesión). Para cualquier cosa que pase «en el celular», mirá el teléfono antes de suponer:",
+      "- estado_de_la_app: qué build está instalada, si corre, si está al frente, si tiene los túneles al Metro y a la API, y si la pantalla está prendida.",
+      "- logs_del_telefono: la consola de JavaScript (errores con su stack) y el logcat nativo de la app; alcance='fallas' trae los crashes desde su comienzo.",
+      "- consultar_base_de_la_app y archivos_de_la_app: el estado local (cola offline, cachés, preferencias). Sólo lectura.",
+      "- captura_del_telefono para ver la pantalla; adb_diagnostico para memoria (dumpsys meminfo) o cuadros lentos (dumpsys gfxinfo); reiniciar_app después de un cambio nativo o un crash.",
+      "- Sólo ven la app del repo, nunca el resto del teléfono de la persona. Citá en tu respuesta lo que viste (la línea del log, el resultado de la consulta).",
+    ]
+      .filter((l) => {
+        const menciona = HERRAMIENTAS_DE_TELEFONO.filter((n) => l.includes(n));
+        return menciona.length === 0 || menciona.some((n) => propias.has(n));
+      })
       .join("\n"),
   ];
 }

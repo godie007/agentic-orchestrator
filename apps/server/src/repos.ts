@@ -1037,16 +1037,22 @@ export class RepoStore {
       }
     }
     const pendientes = await git(["status", "--porcelain=v1", "-uall", "--no-renames"], g);
+    const sinCommitear = new Set<string>();
     for (const linea of pendientes.stdout.split("\n")) {
       if (linea.length < 4) continue;
       const estado = linea.slice(0, 2).trim() || "M";
       archivos.set(linea.slice(3), estado === "??" ? "A" : estado.charAt(0));
+      sinCommitear.add(linea.slice(3));
     }
     const commits = sesion.baseSha
       ? Number((await git(["rev-list", "--count", `${sesion.baseSha}..HEAD`], { ...g, tolerar: true })).stdout.trim() || 0)
       : Number((await git(["rev-list", "--count", "HEAD"], { ...g, tolerar: true })).stdout.trim() || 0);
     const lista = [...archivos].map(([ruta, estado]) => ({ estado, ruta })).sort((a, b) => a.ruta.localeCompare(b.ruta));
-    return { archivos: lista, sensibles: lista.map((a) => a.ruta).filter(esArchivoDeEjecucion), commits };
+    // Sin commits automáticos, lo commiteado lo commiteó la persona: ya lo miró.
+    // El aviso queda sólo para lo que todavía nadie firmó; si no, no se iba
+    // hasta publicar aunque el archivo ya estuviera revisado.
+    const porRevisar = repo.commitsAutomaticos ? lista.map((a) => a.ruta) : [...sinCommitear];
+    return { archivos: lista, sensibles: porRevisar.filter(esArchivoDeEjecucion).sort(), commits };
   }
 
   /** Diff contra la base, incluido lo no commiteado. Con `ruta`, sólo ese archivo. */
@@ -1273,12 +1279,30 @@ export class RepoStore {
     const rama = sesion.rama;
     const actual = (await git(["symbolic-ref", "--short", "-q", "HEAD"], { cwd: destino, tolerar: true })).stdout.trim();
     if (actual === rama) {
-      const sucio = (await git(["status", "--porcelain", "--untracked-files=no"], { cwd: destino })).stdout.trim();
-      if (sucio) {
-        return { ok: false, motivo: `Tenés ${rama} abierta en ${destino} con cambios sin commitear: no se integra encima. Commitealos o guardalos y volvé a integrar.` };
-      }
       await git(["fetch", "-q", "--no-tags", clon, rama], { cwd: destino });
-      const avance = await git(["merge", "--ff-only", "-q", "FETCH_HEAD"], { cwd: destino, tolerar: true });
+      // Lo que la persona tiene sin commitear no frena la publicación si no se
+      // pisa con lo que llega: se aparta, se adelanta y se repone (`--autostash`).
+      // Antes de tocar su carpeta se ensaya la reposición con `merge-tree`, que
+      // no escribe el árbol: un autostash que choca le deja marcas de conflicto
+      // en sus archivos, y eso no se hace en la carpeta de ella.
+      const suyo = (await git(["stash", "create"], { cwd: destino, tolerar: true })).stdout.trim();
+      if (suyo) {
+        const ensayo = await git(["merge-tree", "--write-tree", "--name-only", "--merge-base", "HEAD", "FETCH_HEAD", suyo], {
+          cwd: destino,
+          tolerar: true,
+        });
+        if (!ensayo.ok) {
+          const choques = ensayo.stdout.split("\n\n")[0]!.split("\n").slice(1).filter(Boolean);
+          return {
+            ok: false,
+            motivo:
+              `Tenés cambios sin commitear en ${destino} que chocan con lo que se publica` +
+              (choques.length ? ` (${choques.join(", ")})` : "") +
+              `. Commitealos en tu carpeta, traé ${rama} a la sesión ("Traer") para resolver el conflicto ahí adentro y volvé a publicar.`,
+          };
+        }
+      }
+      const avance = await git(["merge", "--ff-only", "--autostash", "-q", "FETCH_HEAD"], { cwd: destino, tolerar: true });
       if (!avance.ok) {
         return {
           ok: false,

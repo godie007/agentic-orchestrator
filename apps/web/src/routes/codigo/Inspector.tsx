@@ -130,7 +130,7 @@ export function Inspector({
 
 const COLOR_NIVEL: Record<RegistroDeConsola["nivel"], string> = {
   error: "bg-danger/10 text-danger",
-  warn: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  warn: "bg-warn/10 text-warn",
   info: "text-ink",
   log: "text-ink",
   debug: "text-ink-faint",

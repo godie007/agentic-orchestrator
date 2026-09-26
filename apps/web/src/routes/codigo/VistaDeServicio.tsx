@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Bug, ExternalLink, Loader2, Monitor, MousePointerClick, Play, RotateCw, Send, Smartphone, Tablet } from "lucide-react";
+import { Bug, ExternalLink, Package, Loader2, Monitor, MousePointerClick, Play, RotateCw, Send, Smartphone, Tablet } from "lucide-react";
 import { api, type RespuestaDeServicio, type ServicioConEstado } from "../../api.js";
 import { COLOR_ESTADO, ICONO_SERVICIO, useServicios } from "./Servicios.js";
 import { Salida } from "./SalidaDeServicio.js";
 import { esElemento, type ElementoSeleccionado } from "./elemento.js";
 import { aplicarRed, consolaDesdeMensaje, esError, type FallaDeVista, type Registro } from "./sonda.js";
 import { Inspector } from "./Inspector.js";
+import { Espejo } from "./Espejo.js";
+import { Produccion } from "./Produccion.js";
+import { Depuracion } from "./Depuracion.js";
 
 /**
  * La pestaña de un servicio levantado: el frontend o la app móvil en un
@@ -45,16 +48,104 @@ export function VistaDeServicio({
   if (!s) {
     return <div className="flex h-full items-center justify-center text-[13px] text-ink-faint">{consulta.isLoading ? "Cargando…" : "El servicio ya no existe."}</div>;
   }
+  // Una app móvil muestra sus modos aunque esté detenida: el build de
+  // producción no necesita el Metro de la vista previa.
+  if (s.tipo === "movil") {
+    return (
+      <VistaMovil
+        repoId={repoId}
+        s={s}
+        url={s.vivo.estado === "listo" ? s.vivo.url : null}
+        {...(onElemento ? { onElemento: (e: ElementoSeleccionado) => onElemento(s, e) } : {})}
+        {...(onFalla ? { onFalla: (f: FallaDeVista) => onFalla(s, f) } : {})}
+      />
+    );
+  }
   if (s.vivo.estado !== "listo" || !s.vivo.url) return <NoLevantado repoId={repoId} s={s} />;
   return s.tipo === "api" ? (
     <ConsolaDeApi repoId={repoId} s={s} url={s.vivo.url} />
   ) : (
     <Navegador
+      repoId={repoId}
       s={s}
       url={s.vivo.url}
       {...(onElemento ? { onElemento: (e: ElementoSeleccionado) => onElemento(s, e) } : {})}
       {...(onFalla ? { onFalla: (f: FallaDeVista) => onFalla(s, f) } : {})}
     />
+  );
+}
+
+type ModoMovil = "telefono" | "web" | "depuracion" | "produccion";
+
+/**
+ * Una app móvil se ve en el teléfono de verdad (`Espejo`), y el navegador
+ * queda como segunda opción: `expo start --web` sirve para lo que no usa
+ * módulos nativos, y una app con un visor de PDF nativo ni siquiera arma ahí.
+ */
+function VistaMovil({
+  repoId,
+  s,
+  url,
+  onElemento,
+  onFalla,
+}: {
+  repoId: string;
+  s: ServicioConEstado;
+  /** `null` = detenida: el teléfono y la web necesitan el Metro, la producción no. */
+  url: string | null;
+  onElemento?: (elemento: ElementoSeleccionado) => void;
+  onFalla?: (falla: FallaDeVista) => void;
+}) {
+  const [modo, setModoEstado] = useState<ModoMovil>(() => {
+    try {
+      const guardado = localStorage.getItem("orq-vista-movil");
+      return guardado === "web" || guardado === "produccion" || guardado === "depuracion" ? guardado : "telefono";
+    } catch {
+      return "telefono";
+    }
+  });
+  const setModo = (m: ModoMovil) => {
+    setModoEstado(m);
+    try {
+      localStorage.setItem("orq-vista-movil", m);
+    } catch {
+      // sin almacenamiento: vuelve al teléfono al recargar
+    }
+  };
+  const opcion = (m: ModoMovil, rotulo: string, Icono: typeof Smartphone) => (
+    <button
+      type="button"
+      onClick={() => setModo(m)}
+      className={`flex items-center gap-1 rounded px-2 py-0.5 ${modo === m ? "bg-surface text-ink shadow-sm" : "text-ink-dim hover:text-ink"}`}
+    >
+      <Icono className="size-3.5" aria-hidden />
+      {rotulo}
+    </button>
+  );
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-canvas">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface-2 px-2 text-[12px]">
+        <span className="flex items-center gap-0.5 rounded bg-surface-2 p-0.5">
+          {opcion("telefono", "Teléfono en vivo", Smartphone)}
+          {opcion("web", "Navegador (web)", Monitor)}
+          {opcion("depuracion", "Depuración", Bug)}
+          {opcion("produccion", "Build de producción", Package)}
+        </span>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {modo === "depuracion" ? (
+          <Depuracion repoId={repoId} {...(onFalla ? { onFalla } : {})} />
+        ) : modo !== "produccion" && !url ? (
+          <NoLevantado repoId={repoId} s={s} />
+        ) : modo === "telefono" ? (
+          <Espejo repoId={repoId} s={s} {...(onElemento ? { onElemento } : {})} />
+        ) : modo === "produccion" ? (
+          <Produccion repoId={repoId} s={s} />
+        ) : (
+          <Navegador repoId={repoId} s={s} url={url!} {...(onElemento ? { onElemento } : {})} {...(onFalla ? { onFalla } : {})} />
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -108,11 +199,13 @@ function NoLevantado({ repoId, s }: { repoId: string; s: ServicioConEstado }) {
 }
 
 function Navegador({
+  repoId,
   s,
   url,
   onElemento,
   onFalla,
 }: {
+  repoId: string;
   s: ServicioConEstado;
   url: string;
   onElemento?: (elemento: ElementoSeleccionado) => void;
@@ -262,7 +355,8 @@ function Navegador({
           </button>
         </div>
       )}
-      <div className={`flex min-h-0 flex-1 justify-center overflow-auto ${ancho ? "bg-surface-2 p-4" : ""}`}>
+      <div className="flex min-h-0 flex-1">
+      <div className={`flex min-h-0 min-w-0 flex-1 justify-center overflow-auto ${ancho ? "bg-surface-2 p-4" : ""}`}>
         <iframe
           ref={marco}
           key={clave}
@@ -272,6 +366,7 @@ function Navegador({
           style={ancho ? { width: ancho, maxWidth: "100%" } : undefined}
           className={`min-h-0 border-0 bg-white ${ancho ? `h-full shrink-0 rounded-[18px] shadow-xl ring-8 ring-ink/80` : "h-full w-full"}`}
         />
+      </div>
       </div>
       {inspectorAbierto && (
         <Inspector

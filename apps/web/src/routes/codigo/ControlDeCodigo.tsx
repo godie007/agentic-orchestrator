@@ -20,6 +20,7 @@ import {
   Sparkles,
   Trash2,
   Undo2,
+  X,
 } from "lucide-react";
 import { api, type ArbolDeRepo, type CommitDelHistorial, type EstadoScm } from "../../api.js";
 import { ConfirmDialog, relativeTime, useToast } from "../../ui/index.js";
@@ -61,6 +62,8 @@ export function ControlDeCodigo({
   const [mensaje, setMensaje] = useState("");
   const [amend, setAmend] = useState(false);
   const [confirmar, setConfirmar] = useState<Confirmacion | null>(null);
+  // Archivos sensibles que la persona ya abrió en el diff (o cuyo aviso cerró).
+  const [revisados, setRevisados] = useState<Set<string>>(() => new Set());
 
   const scm = useQuery({ queryKey: ["scm", repoId], queryFn: () => api.scm(repoId), refetchInterval: 3_000 });
   const sesion = scm.data?.sesion ?? arbol?.sesion ?? null;
@@ -152,6 +155,8 @@ export function ControlDeCodigo({
   const ramaActual = estado?.rama ?? sesion.rama;
   const esRamaDelProyecto = origen !== "creado" && !ramaActual.startsWith("orq/");
   const sensibles = new Set(arbol?.sensibles ?? []);
+  const porRevisar = [...sensibles].filter((ruta) => !revisados.has(ruta));
+  const revisar = (...rutas: string[]) => setRevisados((previos) => new Set([...previos, ...rutas]));
   const contraBase = arbol?.cambios ?? [];
   const preparados = estado?.preparados ?? [];
   const cambios = estado?.cambios ?? [];
@@ -264,11 +269,39 @@ export function ControlDeCodigo({
         )}
       </div>
 
-      {sensibles.size > 0 && (
-        <p className="mx-3 mb-2 flex items-start gap-1.5 rounded border border-danger/40 bg-danger/10 px-2 py-1.5 text-[11px] text-danger">
+      {porRevisar.length > 0 && (
+        <div className="mx-3 mb-2 flex items-start gap-1.5 rounded border border-danger/40 bg-danger/10 px-2 py-1.5 text-[11px] text-danger">
           <ShieldAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-          Cambia archivos que deciden qué se ejecuta: {[...sensibles].join(", ")}. Miralos antes de integrar.
-        </p>
+          <p className="min-w-0 flex-1">
+            Cambia archivos que deciden qué se ejecuta:{" "}
+            {porRevisar.map((ruta, i) => (
+              <span key={ruta}>
+                {i > 0 && ", "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    revisar(ruta);
+                    onAbrirDiff(ruta);
+                  }}
+                  className="underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                  title="Abrir el diff (lo da por revisado)"
+                >
+                  {ruta}
+                </button>
+              </span>
+            ))}
+            . Miralos antes de integrar.
+          </p>
+          <button
+            type="button"
+            onClick={() => revisar(...porRevisar)}
+            className="shrink-0 rounded p-0.5 hover:bg-danger/15"
+            title="Ya los revisé"
+            aria-label="Cerrar el aviso"
+          >
+            <X className="size-3" aria-hidden />
+          </button>
+        </div>
       )}
 
       {(estado?.conflictos.length ?? 0) > 0 && (
@@ -295,7 +328,10 @@ export function ControlDeCodigo({
               ruta={a.ruta}
               estado={a.estado}
               sensible={sensibles.has(a.ruta)}
-              onAbrir={() => onAbrirDiff(a.ruta)}
+              onAbrir={() => {
+                revisar(a.ruta);
+                onAbrirDiff(a.ruta);
+              }}
               acciones={
                 <button type="button" title="Quitar de los preparados" disabled={bloqueado} onClick={() => operar.mutate({ op: "quitar", cuerpo: { rutas: [a.ruta] } })} className={ICONO}>
                   <Minus className="size-3.5" aria-hidden />
@@ -337,7 +373,10 @@ export function ControlDeCodigo({
               ruta={a.ruta}
               estado={a.estado}
               sensible={sensibles.has(a.ruta)}
-              onAbrir={() => onAbrirDiff(a.ruta)}
+              onAbrir={() => {
+                revisar(a.ruta);
+                onAbrirDiff(a.ruta);
+              }}
               acciones={
                 <>
                   <button
@@ -387,7 +426,10 @@ export function ControlDeCodigo({
           <p className="px-4 py-1 text-[12px] text-ink-faint">La sesión todavía no cambió nada.</p>
         ) : (
           contraBase.map((cambio) => (
-            <FilaDeArchivo key={`b:${cambio.ruta}`} ruta={cambio.ruta} estado={cambio.estado} sensible={sensibles.has(cambio.ruta)} onAbrir={() => onAbrirDiff(cambio.ruta)} />
+            <FilaDeArchivo key={`b:${cambio.ruta}`} ruta={cambio.ruta} estado={cambio.estado} sensible={sensibles.has(cambio.ruta)} onAbrir={() => {
+                revisar(cambio.ruta);
+                onAbrirDiff(cambio.ruta);
+              }} />
           ))
         )}
       </Seccion>

@@ -147,6 +147,20 @@ export class ServiciosVivos {
     };
   }
 
+  /**
+   * Lo que necesita un celular para abrir una app móvil de la sesión: el Metro
+   * **detrás** del proxy (la app nativa no pasa por el selector de elementos) y
+   * los puertos públicos de todo lo que corre en el repo, que son los que el
+   * bundle ya trae en sus URLs.
+   */
+  puertosParaDispositivo(repoId: string, servicioId: string): { metro: number | null; puertos: number[] } {
+    const propio = this.vivos.get(clave(repoId, servicioId));
+    const puertos = [...this.vivos.values()]
+      .filter((v) => v.repoId === repoId && v.servicioId !== servicioId && v.estado === "listo" && v.puerto != null)
+      .map((v) => v.puerto!);
+    return { metro: propio?.estado === "listo" ? propio.puertoInterno : null, puertos };
+  }
+
   hayVivos(filtro: { repoId?: string; companyId?: string }): boolean {
     return [...this.vivos.values()].some(
       (v) =>
@@ -673,7 +687,7 @@ async function mismoLockfile(origen: string, destino: string): Promise<boolean> 
   return false;
 }
 
-function argvDeInstalacionLimpia(dir: string): string[] {
+export function argvDeInstalacionLimpia(dir: string): string[] {
   if (existsSync(join(dir, "pnpm-lock.yaml"))) return ["pnpm", "install", "--frozen-lockfile", "--ignore-scripts"];
   if (existsSync(join(dir, "yarn.lock"))) return ["yarn", "install", "--frozen-lockfile", "--ignore-scripts"];
   if (existsSync(join(dir, "package-lock.json"))) return ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"];
@@ -681,7 +695,7 @@ function argvDeInstalacionLimpia(dir: string): string[] {
 }
 
 /** `cp -cR`: clon copy-on-write en APFS. Donde no se puede, copia común. */
-function copiarModulos(desde: string, hasta: string): Promise<void> {
+export function copiarModulos(desde: string, hasta: string): Promise<void> {
   const args = process.platform === "darwin" ? ["-cR", desde, hasta] : ["-R", desde, hasta];
   return new Promise((resolver, rechazar) => {
     execFile("cp", args, { timeout: CORTE_PREPARAR_MS, maxBuffer: 1024 * 1024 }, (error) => {

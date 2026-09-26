@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
+import { manejarEspejoWs } from "./espejo-ws.js";
 import cors from "@fastify/cors";
 import { registrarRutasDeCodigo } from "./rutas-codigo.js";
 import { registerRoutes, type RouteDeps } from "./routes.js";
@@ -38,5 +39,11 @@ export async function construirApp(
   });
   await registerRoutes(app, deps);
   registrarRutasDeCodigo(app, deps);
+  // Fastify no atiende upgrades: el espejo del teléfono (WebSocket) se engancha
+  // al servidor HTTP. Un upgrade que nadie reclama se corta, no queda colgado.
+  const espejo = manejarEspejoWs(deps.runtime, permitidos);
+  app.server.on("upgrade", (req, socket, cabeza) => {
+    if (!espejo(req, socket, cabeza)) socket.destroy();
+  });
   return app;
 }

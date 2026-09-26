@@ -158,17 +158,38 @@ describe("RepoStore con un origen local con git", () => {
     expect(sh(repos.rutaClon(repo), "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe("HEAD");
   });
 
-  it("con la carpeta sucia no integra encima: lo dice y la sesión sigue abierta", async () => {
+  it("con la carpeta sucia publica igual si no se pisa, y su trabajo queda sin commitear", async () => {
     const origen = repoDePersona();
+    writeFileSync(join(origen, "otro.js"), "uno\n");
+    sh(origen, "add", "-A");
+    sh(origen, "commit", "-q", "-m", "otro");
     const { repo } = await repos.cargar(COMPANY, { origen: { tipo: "local", ruta: origen } });
     const sesion = await repos.abrirSesion(repo);
     writeFileSync(join(repos.rutaWorktree(sesion), "nuevo.js"), "hola\n");
+    await repos.checkpoint(sesion, repo, { nombre: "Persona", id: "persona" }, "");
+    writeFileSync(join(origen, "otro.js"), "// cambio sin commitear\n");
+
+    const resultado = await repos.integrar(sesion, repo);
+    expect(resultado.ok).toBe(true);
+    expect(readFileSync(join(origen, "nuevo.js"), "utf8")).toBe("hola\n");
+    expect(readFileSync(join(origen, "otro.js"), "utf8")).toBe("// cambio sin commitear\n");
+    expect(sh(origen, "status", "--porcelain").trim()).toBe("M otro.js");
+    expect(sh(origen, "stash", "list").trim()).toBe("");
+  });
+
+  it("con la carpeta sucia que choca no toca nada: nombra el archivo", async () => {
+    const origen = repoDePersona();
+    const { repo } = await repos.cargar(COMPANY, { origen: { tipo: "local", ruta: origen } });
+    const sesion = await repos.abrirSesion(repo);
+    writeFileSync(join(repos.rutaWorktree(sesion), "index.js"), "sesion\n");
+    await repos.checkpoint(sesion, repo, { nombre: "Persona", id: "persona" }, "");
     writeFileSync(join(origen, "index.js"), "// cambio sin commitear\n");
+    const antes = sh(origen, "rev-parse", "HEAD");
 
     const resultado = await repos.integrar(sesion, repo);
     expect(resultado.ok).toBe(false);
-    expect(resultado.ok === false && resultado.motivo).toMatch(/sin commitear/);
-    expect(existsSync(join(origen, "nuevo.js"))).toBe(false);
+    expect(resultado.ok === false && resultado.motivo).toMatch(/sin commitear.*\(index\.js\)/);
+    expect(sh(origen, "rev-parse", "HEAD")).toBe(antes);
     expect(readFileSync(join(origen, "index.js"), "utf8")).toBe("// cambio sin commitear\n");
     expect(store.getSesionCodigo(sesion.id)?.estado).toBe("abierta");
   });

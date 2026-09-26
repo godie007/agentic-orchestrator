@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import {
   argvATexto,
@@ -19,6 +19,9 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join } from "node:path";
 import { resolverEnWorktree } from "@orq/tools";
 import { ErrorGit } from "./git.js";
+import { paqueteDeLaApp } from "./dispositivos.js";
+import { componentesEnPantalla } from "./inspector-rn.js";
+import { empaquetar } from "./scrcpy.js";
 
 /**
  * API del código de un proyecto: cargar repos, mirar la sesión, integrar.
@@ -383,6 +386,390 @@ export function registrarRutasDeCodigo(app: FastifyInstance, deps: { store: Stor
     }
     try {
       return await runtime.arrancarServicio(repo, servicioId);
+    } catch (error) {
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // --- El celular como vista previa de una app móvil ---------------------------
+
+  app.get("/api/dispositivos", async () => ({
+    disponible: runtime.dispositivos.disponible,
+    dispositivos: await runtime.dispositivos.listar(),
+    espejo: await runtime.dispositivos.motorDeEspejo(),
+  }));
+
+  app.post("/api/dispositivos/vincular", async (_request, reply) => {
+    try {
+      return runtime.dispositivos.vincular();
+    } catch (error) {
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.get("/api/dispositivos/vincular/:id", async (request, reply) => {
+    const vinculo = runtime.dispositivos.vinculo((request.params as { id: string }).id);
+    if (!vinculo) {
+      reply.code(404);
+      return { error: "No existe ese vínculo." };
+    }
+    return vinculo;
+  });
+
+  // --- Depuración de la app en el teléfono (panel del IDE) ---------------------------
+  // Las mismas reglas que las herramientas de los agentes (depuracion-movil.ts):
+  // el panel de la persona no es un shell, por la misma razón que la terminal
+  // del IDE tampoco lo es — la API escucha en localhost.
+
+  const telefono = (repoId: string) => {
+    const repo = conRepo(repoId);
+    if (!repo) return null;
+    return { repo, t: runtime.telefonoStorage(repo.companyId) };
+  };
+  const responder = async <T extends { ok: boolean }>(reply: FastifyReply, r: Promise<T>) => {
+    const res = await r;
+    if (!res.ok) reply.code(409);
+    return res.ok ? res : { error: (res as unknown as { motivo: string }).motivo };
+  };
+
+  app.get("/api/repos/:repoId/telefono/logs", async (request, reply) => {
+    const x = telefono((request.params as { repoId: string }).repoId);
+    if (!x) return reply.code(404).send({ error: "No existe el repo." });
+    const q = request.query as { alcance?: string; nivel?: string; lineas?: string; buscar?: string };
+    const nivel = (["V", "D", "I", "W", "E"] as const).find((n) => n === q.nivel) ?? "I";
+    return responder(
+      reply,
+      x.t.logs(x.repo.id, {
+        alcance: q.alcance === "fallas" ? "fallas" : "app",
+        nivel,
+        lineas: Math.max(10, Math.min(1500, Number(q.lineas ?? 300) || 300)),
+        ...(q.buscar?.trim() ? { buscar: q.buscar.trim() } : {}),
+      }),
+    );
+  });
+
+  app.get("/api/repos/:repoId/telefono/estado", async (request, reply) => {
+    const x = telefono((request.params as { repoId: string }).repoId);
+    if (!x) return reply.code(404).send({ error: "No existe el repo." });
+    return responder(reply, x.t.estado(x.repo.id));
+  });
+
+  app.get("/api/repos/:repoId/telefono/archivos", async (request, reply) => {
+    const x = telefono((request.params as { repoId: string }).repoId);
+    if (!x) return reply.code(404).send({ error: "No existe el repo." });
+    const { ruta = ".", leer } = request.query as { ruta?: string; leer?: string };
+    return responder(reply, leer === "1" ? x.t.leerArchivo(x.repo.id, ruta) : x.t.listarArchivos(x.repo.id, ruta));
+  });
+
+  app.post("/api/repos/:repoId/telefono/base", async (request, reply) => {
+    const x = telefono((request.params as { repoId: string }).repoId);
+    if (!x) return reply.code(404).send({ error: "No existe el repo." });
+    const cuerpo = z.object({ archivo: z.string().min(1).max(300), sql: z.string().min(1).max(5_000) }).safeParse(request.body);
+    if (!cuerpo.success) return invalid(reply, cuerpo.error);
+    return responder(reply, x.t.consultarBase(x.repo.id, cuerpo.data.archivo, cuerpo.data.sql));
+  });
+
+  app.post("/api/repos/:repoId/telefono/diagnostico", async (request, reply) => {
+    const x = telefono((request.params as { repoId: string }).repoId);
+    if (!x) return reply.code(404).send({ error: "No existe el repo." });
+    const cuerpo = z.object({ comando: z.string().min(1).max(300) }).safeParse(request.body);
+    if (!cuerpo.success) return invalid(reply, cuerpo.error);
+    return responder(reply, x.t.diagnostico(x.repo.id, cuerpo.data.comando));
+  });
+
+  app.post("/api/repos/:repoId/telefono/reiniciar", async (request, reply) => {
+    const x = telefono((request.params as { repoId: string }).repoId);
+    if (!x) return reply.code(404).send({ error: "No existe el repo." });
+    return responder(reply, x.t.reiniciar(x.repo.id));
+  });
+
+  app.post("/api/repos/:repoId/telefono/limpiar-datos", async (request, reply) => {
+    const x = telefono((request.params as { repoId: string }).repoId);
+    if (!x) return reply.code(404).send({ error: "No existe el repo." });
+    return responder(reply, x.t.limpiarDatos(x.repo.id));
+  });
+
+  // --- El AAB de producción ------------------------------------------------------
+
+  app.get("/api/repos/:repoId/servicios/:servicioId/aab", async (request, reply) => {
+    const { repoId, servicioId } = request.params as { repoId: string; servicioId: string };
+    const repo = conRepo(repoId);
+    if (!repo) {
+      reply.code(404);
+      return { error: "No existe el repo." };
+    }
+    try {
+      return {
+        plan: await runtime.aab.plan(runtime.contextoAab(repo, servicioId)),
+        trabajo: runtime.aab.trabajo(`${repoId}:${servicioId}`),
+      };
+    } catch (error) {
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : String(error), trabajo: runtime.aab.trabajo(`${repoId}:${servicioId}`) };
+    }
+  });
+
+  app.get("/api/repos/:repoId/servicios/:servicioId/aab/trabajo", async (request) => {
+    const { repoId, servicioId } = request.params as { repoId: string; servicioId: string };
+    return { trabajo: runtime.aab.trabajo(`${repoId}:${servicioId}`) };
+  });
+
+  app.post("/api/repos/:repoId/servicios/:servicioId/aab", async (request, reply) => {
+    const { repoId, servicioId } = request.params as { repoId: string; servicioId: string };
+    const cuerpo = z
+      .object({ version: z.string().regex(/^\d+\.\d+\.\d+$/), versionCode: z.number().int().positive().max(2_100_000_000), incluirCambios: z.boolean().default(false) })
+      .safeParse(request.body);
+    if (!cuerpo.success) return invalid(reply, cuerpo.error);
+    const repo = conRepo(repoId);
+    if (!repo) {
+      reply.code(404);
+      return { error: "No existe el repo." };
+    }
+    try {
+      return { trabajo: runtime.aab.construir(`${repoId}:${servicioId}`, runtime.contextoAab(repo, servicioId), cuerpo.data) };
+    } catch (error) {
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // El espejo: la pantalla en vivo, los toques y lo que hay en pantalla.
+  const conTelefono = async (serial: string) => {
+    const lista = await runtime.dispositivos.listar();
+    if (!lista.some((d) => d.serial === serial && d.estado === "device")) throw new Error("Ese teléfono no está conectado.");
+  };
+
+  app.get("/api/dispositivos/:serial/pantalla", async (request, reply) => {
+    const { serial } = request.params as { serial: string };
+    try {
+      await conTelefono(serial);
+    } catch (error) {
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+    reply.hijack();
+    const borde = "cuadro";
+    reply.raw.writeHead(200, {
+      "Content-Type": `multipart/x-mixed-replace; boundary=${borde}`,
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    reply.raw.write(`--${borde}\r\n`);
+    // El cierre de la **respuesta** es el de la conexión: el `close` del
+    // pedido llega apenas se leyó un GET, y con él la captura quedaba viva.
+    let cortar: (() => void) | null = null;
+    let cerrado = false;
+    const cerrar = () => {
+      cerrado = true;
+      cortar?.();
+      if (!reply.raw.writableEnded) reply.raw.end();
+    };
+    reply.raw.on("close", cerrar);
+    try {
+      cortar = await runtime.dispositivos.transmitir(
+        serial,
+        (jpeg) => {
+          if (reply.raw.writableEnded) return;
+          // El borde va **después** de cada cuadro: Chrome pinta una parte
+          // recién cuando ve el borde siguiente, y con la pantalla quieta el
+          // último cuadro quedaba sin pintar.
+          reply.raw.write(`Content-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`);
+          reply.raw.write(jpeg);
+          reply.raw.write(`\r\n--${borde}\r\n`);
+        },
+        () => {
+          if (!reply.raw.writableEnded) reply.raw.end();
+        },
+      );
+      if (cerrado) cortar();
+    } catch {
+      cerrar();
+    }
+  });
+
+  /**
+   * El video del teléfono con scrcpy: los paquetes H.264 tal cual los armó el
+   * teléfono, con su tipo, para que el navegador los decodifique con WebCodecs.
+   * Formato: `[tipo u8][largo u32][datos]` (ver `scrcpy.ts`).
+   */
+  app.get("/api/dispositivos/:serial/video", async (request, reply) => {
+    const { serial } = request.params as { serial: string };
+    if ((await runtime.dispositivos.motorDeEspejo()).motor !== "scrcpy") {
+      reply.code(409);
+      return { error: "scrcpy no está instalado: se usa el espejo de respaldo.", motor: "screenrecord" };
+    }
+    try {
+      await conTelefono(serial);
+    } catch (error) {
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+    reply.hijack();
+    reply.raw.writeHead(200, { "Content-Type": "application/octet-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
+    let soltar: (() => void) | null = null;
+    let cerrado = false;
+    const cerrar = () => {
+      if (cerrado) return;
+      cerrado = true;
+      soltar?.();
+      if (!reply.raw.writableEnded) reply.raw.end();
+    };
+    reply.raw.on("close", cerrar);
+    try {
+      soltar = await runtime.dispositivos.mirar(
+        serial,
+        (p) => {
+          if (!reply.raw.writableEnded) reply.raw.write(empaquetar(p));
+        },
+        cerrar,
+      );
+      if (cerrado) soltar();
+    } catch (error) {
+      request.log.warn({ error }, "no se pudo abrir el espejo con scrcpy");
+      cerrar();
+    }
+  });
+
+  app.post("/api/dispositivos/:serial/toque", async (request, reply) => {
+    const { serial } = request.params as { serial: string };
+    const cuerpo = z
+      .object({ accion: z.enum(["abajo", "mover", "arriba"]), x: z.number().min(0).max(1), y: z.number().min(0).max(1) })
+      .safeParse(request.body);
+    if (!cuerpo.success) return invalid(reply, cuerpo.error);
+    try {
+      runtime.dispositivos.toque(serial, cuerpo.data.accion, cuerpo.data.x, cuerpo.data.y);
+      return { ok: true };
+    } catch (error) {
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.post("/api/dispositivos/:serial/rueda", async (request, reply) => {
+    const { serial } = request.params as { serial: string };
+    const cuerpo = z
+      .object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), h: z.number().min(-16).max(16), v: z.number().min(-16).max(16) })
+      .safeParse(request.body);
+    if (!cuerpo.success) return invalid(reply, cuerpo.error);
+    try {
+      runtime.dispositivos.rueda(serial, cuerpo.data.x, cuerpo.data.y, cuerpo.data.h, cuerpo.data.v);
+      return { ok: true };
+    } catch (error) {
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  const cuerpoToque = z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) });
+  const cuerpoDeslizar = z.object({ desde: cuerpoToque, hasta: cuerpoToque, ms: z.number().min(0).max(5_000) });
+  const cuerpoTecla = z.object({ tecla: z.enum(["atras", "inicio", "recientes", "enter", "borrar", "menu"]) });
+  const cuerpoTexto = z.object({ texto: z.string().min(1).max(300) });
+
+  const accion = <T extends z.ZodTypeAny>(ruta: string, esquema: T, hacer: (serial: string, datos: z.infer<T>) => Promise<unknown>) =>
+    app.post(`/api/dispositivos/:serial/${ruta}`, async (request, reply) => {
+      const { serial } = request.params as { serial: string };
+      const cuerpo = esquema.safeParse(request.body);
+      if (!cuerpo.success) return invalid(reply, cuerpo.error);
+      try {
+        const extra = await hacer(serial, cuerpo.data);
+        return { ok: true, ...(extra && typeof extra === "object" ? extra : {}) };
+      } catch (error) {
+        reply.code(409);
+        return { error: error instanceof Error ? error.message : String(error) };
+      }
+    });
+  accion("tocar", cuerpoToque, (serial, d) => runtime.dispositivos.tocar(serial, d.x, d.y));
+  accion("deslizar", cuerpoDeslizar, (serial, d) => runtime.dispositivos.deslizar(serial, d.desde, d.hasta, d.ms));
+  accion("tecla", cuerpoTecla, (serial, d) => runtime.dispositivos.tecla(serial, d.tecla));
+  accion("texto", cuerpoTexto, (serial, d) => runtime.dispositivos.escribir(serial, d.texto));
+
+  app.get("/api/dispositivos/:serial/arbol", async (request, reply) => {
+    const { serial } = request.params as { serial: string };
+    try {
+      return await runtime.dispositivos.arbol(serial);
+    } catch (error) {
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  /** Qué componentes dibujan lo señalado: se le pregunta a la app por el depurador de Metro. */
+  app.post("/api/repos/:repoId/servicios/:servicioId/dispositivo/componentes", async (request, reply) => {
+    const { repoId, servicioId } = request.params as { repoId: string; servicioId: string };
+    const cuerpo = z.object({ buscados: z.array(z.string().max(300)).max(20) }).safeParse(request.body);
+    if (!cuerpo.success) return invalid(reply, cuerpo.error);
+    const { metro } = runtime.servicios.puertosParaDispositivo(repoId, servicioId);
+    if (metro == null) return { componentes: [], pantallas: [], aviso: "El servicio no está levantado." };
+    try {
+      return (await componentesEnPantalla(metro, cuerpo.data.buscados)) ?? { componentes: [], pantallas: [], aviso: "La app no dibuja ese texto con React." };
+    } catch (error) {
+      return { componentes: [], pantallas: [], aviso: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  const cuerpoDispositivo = z.object({ serial: z.string().min(1).max(200) });
+
+  /** ¿Está instalada la app en ese teléfono? Y cómo va su instalación, si hay una. */
+  app.get("/api/repos/:repoId/servicios/:servicioId/dispositivo", async (request, reply) => {
+    const { repoId, servicioId } = request.params as { repoId: string; servicioId: string };
+    const { serial } = request.query as { serial?: string };
+    const repo = conRepo(repoId);
+    if (!repo?.servicios.some((s) => s.id === servicioId) || !serial) {
+      reply.code(404);
+      return { error: "No existe el servicio o falta el teléfono." };
+    }
+    try {
+      const { carpeta } = runtime.carpetaDeServicio(repo, servicioId);
+      const paquete = await paqueteDeLaApp(carpeta);
+      return {
+        paquete,
+        instalada: paquete ? await runtime.dispositivos.instalada(serial, paquete) : false,
+        instalacion: runtime.dispositivos.instalacion(`${repoId}:${servicioId}:${serial}`),
+      };
+    } catch (error) {
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.post("/api/repos/:repoId/servicios/:servicioId/dispositivo/abrir", async (request, reply) => {
+    const { repoId, servicioId } = request.params as { repoId: string; servicioId: string };
+    const cuerpo = cuerpoDispositivo.safeParse(request.body);
+    if (!cuerpo.success) return invalid(reply, cuerpo.error);
+    const repo = conRepo(repoId);
+    if (!repo?.servicios.some((s) => s.id === servicioId)) {
+      reply.code(404);
+      return { error: "No existe el servicio." };
+    }
+    try {
+      const { carpeta } = runtime.carpetaDeServicio(repo, servicioId);
+      const paquete = await paqueteDeLaApp(carpeta);
+      if (!paquete) throw new Error("La app no declara su paquete de Android (expo.android.package en app.json).");
+      const { metro, puertos } = runtime.servicios.puertosParaDispositivo(repoId, servicioId);
+      if (metro == null) throw new Error("Levantá el servicio primero: el teléfono baja el JavaScript de su Metro.");
+      await runtime.dispositivos.abrir(cuerpo.data.serial, { paquete, metro, puertos, destino: { repoId, servicioId } });
+      return { ok: true, paquete, metro, puertos };
+    } catch (error) {
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.post("/api/repos/:repoId/servicios/:servicioId/dispositivo/instalar", async (request, reply) => {
+    const { repoId, servicioId } = request.params as { repoId: string; servicioId: string };
+    const cuerpo = cuerpoDispositivo.safeParse(request.body);
+    if (!cuerpo.success) return invalid(reply, cuerpo.error);
+    const repo = conRepo(repoId);
+    if (!repo?.servicios.some((s) => s.id === servicioId)) {
+      reply.code(404);
+      return { error: "No existe el servicio." };
+    }
+    try {
+      const { carpeta, tmp } = runtime.carpetaDeServicio(repo, servicioId);
+      return runtime.dispositivos.instalar(`${repoId}:${servicioId}:${cuerpo.data.serial}`, cuerpo.data.serial, carpeta, tmp);
     } catch (error) {
       reply.code(409);
       return { error: error instanceof Error ? error.message : String(error) };

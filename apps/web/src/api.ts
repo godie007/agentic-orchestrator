@@ -76,6 +76,79 @@ export interface TreeFolder {
   children: Array<TreeFolder | TreeFile>;
 }
 
+export interface Dispositivo {
+  serial: string;
+  estado: string;
+  modelo: string | null;
+  inalambrico: boolean;
+}
+export interface VinculoDeDispositivo {
+  id: string;
+  estado: "esperando" | "vinculando" | "listo" | "fallo" | "vencido";
+  detalle: string | null;
+  serial: string | null;
+  qr: string;
+  vence: number;
+}
+export interface NodoDePantalla {
+  id: number;
+  padre: number | null;
+  clase: string;
+  texto: string;
+  descripcion: string;
+  recurso: string;
+  pulsable: boolean;
+  x: number;
+  y: number;
+  ancho: number;
+  alto: number;
+}
+export interface VerificacionAab {
+  nombre: string;
+  ok: boolean | null;
+  detalle: string;
+}
+export interface ResultadoAab {
+  archivo: string;
+  url: string;
+  bytes: number;
+  sha256: string;
+  version: string;
+  versionCode: number;
+  commit: string;
+  incluyeCambios: boolean;
+  certificado: { propietario: string; sha256: string } | null;
+  permisos: string[];
+  verificaciones: VerificacionAab[];
+  fecha: number;
+}
+export interface PlanDeAab {
+  paquete: string;
+  version: string;
+  versionCode: number;
+  sugerida: { version: string; versionCode: number };
+  commit: { sha: string; asunto: string; rama: string };
+  cambiosSinCommitear: number;
+  entorno: { archivo: string; variables: string[] } | null;
+  firma: string | null;
+  anterior: { archivo: string; version: string | null; versionCode: number | null } | null;
+  historial: ResultadoAab[];
+  avisos: string[];
+}
+export interface TrabajoAab {
+  id: string;
+  estado: "construyendo" | "listo" | "fallo";
+  paso: string;
+  lineas: string[];
+  desde: number;
+  resultado: ResultadoAab | null;
+}
+export interface InstalacionEnDispositivo {
+  estado: "instalando" | "listo" | "fallo";
+  lineas: string[];
+  desde: number;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // El `content-type: application/json` solo va cuando hay cuerpo. Fastify
   // rechaza con 400 un body vacío si el header dice que viene JSON, y eso
@@ -633,6 +706,77 @@ export const api = {
     request<Repositorio>(`/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}`, { method: "DELETE" }),
   prepararServicio: (repoId: string, servicioId: string) =>
     request<{ ok: true }>(`/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/preparar`, { method: "POST" }),
+  dispositivos: () =>
+    request<{ disponible: boolean; dispositivos: Dispositivo[]; espejo?: { motor: "scrcpy" | "screenrecord"; version: string | null } }>(
+      "/dispositivos",
+    ),
+  /** Los paquetes H.264 del teléfono (scrcpy): `[tipo u8][largo u32][datos]`. */
+  urlVideo: (serial: string) => `/api/dispositivos/${encodeURIComponent(serial)}/video`,
+  toqueDispositivo: (serial: string, accion: "abajo" | "mover" | "arriba", x: number, y: number) =>
+    request<{ ok: true }>(`/dispositivos/${encodeURIComponent(serial)}/toque`, { method: "POST", body: JSON.stringify({ accion, x, y }) }),
+  ruedaDispositivo: (serial: string, x: number, y: number, h: number, v: number) =>
+    request<{ ok: true }>(`/dispositivos/${encodeURIComponent(serial)}/rueda`, { method: "POST", body: JSON.stringify({ x, y, h, v }) }),
+  vincularDispositivo: () => request<VinculoDeDispositivo>("/dispositivos/vincular", { method: "POST" }),
+  vinculoDeDispositivo: (id: string) => request<VinculoDeDispositivo>(`/dispositivos/vincular/${encodeURIComponent(id)}`),
+  appEnDispositivo: (repoId: string, servicioId: string, serial: string) =>
+    request<{ paquete: string | null; instalada: boolean; instalacion: InstalacionEnDispositivo | null }>(
+      `/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/dispositivo?serial=${encodeURIComponent(serial)}`,
+    ),
+  /** La pantalla del teléfono como MJPEG: va directo a un `<img>`. */
+  urlPantalla: (serial: string) => `/api/dispositivos/${encodeURIComponent(serial)}/pantalla`,
+  tocarDispositivo: (serial: string, x: number, y: number) =>
+    request<{ ok: true }>(`/dispositivos/${encodeURIComponent(serial)}/tocar`, { method: "POST", body: JSON.stringify({ x, y }) }),
+  deslizarDispositivo: (serial: string, desde: { x: number; y: number }, hasta: { x: number; y: number }, ms: number) =>
+    request<{ ok: true }>(`/dispositivos/${encodeURIComponent(serial)}/deslizar`, {
+      method: "POST",
+      body: JSON.stringify({ desde, hasta, ms }),
+    }),
+  teclaDispositivo: (serial: string, tecla: "atras" | "inicio" | "recientes" | "enter" | "borrar" | "menu") =>
+    request<{ ok: true }>(`/dispositivos/${encodeURIComponent(serial)}/tecla`, { method: "POST", body: JSON.stringify({ tecla }) }),
+  textoDispositivo: (serial: string, texto: string) =>
+    request<{ ok: true; omitidos?: boolean }>(`/dispositivos/${encodeURIComponent(serial)}/texto`, {
+      method: "POST",
+      body: JSON.stringify({ texto }),
+    }),
+  arbolDeDispositivo: (serial: string) =>
+    request<{ ancho: number; alto: number; nodos: NodoDePantalla[] }>(`/dispositivos/${encodeURIComponent(serial)}/arbol`),
+  componentesEnDispositivo: (repoId: string, servicioId: string, buscados: string[]) =>
+    request<{ componentes: string[]; pantallas: string[]; aviso?: string }>(
+      `/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/dispositivo/componentes`,
+      { method: "POST", body: JSON.stringify({ buscados }) },
+    ),
+  logsDelTelefono: (repoId: string, q: { alcance: "app" | "fallas"; nivel: string; lineas: number; buscar?: string }) =>
+    request<{ texto: string; lineas: number; paquete: string }>(
+      `/repos/${repoId}/telefono/logs?${new URLSearchParams({ alcance: q.alcance, nivel: q.nivel, lineas: String(q.lineas), ...(q.buscar ? { buscar: q.buscar } : {}) })}`,
+    ),
+  estadoDeLaApp: (repoId: string) => request<{ texto: string }>(`/repos/${repoId}/telefono/estado`),
+  archivosDeLaApp: (repoId: string, ruta: string, leer = false) =>
+    request<{ texto: string }>(`/repos/${repoId}/telefono/archivos?${new URLSearchParams({ ruta, ...(leer ? { leer: "1" } : {}) })}`),
+  baseDeLaApp: (repoId: string, archivo: string, sql: string) =>
+    request<{ texto: string }>(`/repos/${repoId}/telefono/base`, { method: "POST", body: JSON.stringify({ archivo, sql }) }),
+  diagnosticoDelTelefono: (repoId: string, comando: string) =>
+    request<{ texto: string }>(`/repos/${repoId}/telefono/diagnostico`, { method: "POST", body: JSON.stringify({ comando }) }),
+  reiniciarAppDelTelefono: (repoId: string) => request<{ texto: string }>(`/repos/${repoId}/telefono/reiniciar`, { method: "POST" }),
+  limpiarDatosDelTelefono: (repoId: string) => request<{ texto: string }>(`/repos/${repoId}/telefono/limpiar-datos`, { method: "POST" }),
+  planDeAab: (repoId: string, servicioId: string) =>
+    request<{ plan: PlanDeAab; trabajo: TrabajoAab | null }>(`/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/aab`),
+  trabajoDeAab: (repoId: string, servicioId: string) =>
+    request<{ trabajo: TrabajoAab | null }>(`/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/aab/trabajo`),
+  construirAab: (repoId: string, servicioId: string, pedido: { version: string; versionCode: number; incluirCambios: boolean }) =>
+    request<{ trabajo: TrabajoAab }>(`/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/aab`, {
+      method: "POST",
+      body: JSON.stringify(pedido),
+    }),
+  abrirEnDispositivo: (repoId: string, servicioId: string, serial: string) =>
+    request<{ ok: true; paquete: string; metro: number; puertos: number[] }>(
+      `/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/dispositivo/abrir`,
+      { method: "POST", body: JSON.stringify({ serial }) },
+    ),
+  instalarEnDispositivo: (repoId: string, servicioId: string, serial: string) =>
+    request<InstalacionEnDispositivo>(`/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/dispositivo/instalar`, {
+      method: "POST",
+      body: JSON.stringify({ serial }),
+    }),
   arrancarServicio: (repoId: string, servicioId: string) =>
     request<EstadoVivoDeServicio>(`/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/arrancar`, { method: "POST" }),
   detenerServicio: (repoId: string, servicioId: string) =>

@@ -1560,6 +1560,187 @@ archivo: `inspector.ts` al lado de `Inspector.tsx` **choca en macOS** (el
 sistema de archivos no distingue mayúsculas y tsc lo rechaza), por eso los
 tipos viven en `sonda.ts`.
 
+**Una app móvil se ve en el celular de la persona, vinculado por QR**
+(`dispositivos.ts`, panel "Celular" de la vista del servicio `movil`). Una app
+de React Native con módulos nativos no arma ni el bundle web (en INSPIA,
+`react-native-pdf`), así que el navegador no sirve de vista previa. El QR es el
+de **depuración inalámbrica de Android** (`WIFI:T:ADB;S:<nombre>;P:<clave>;;`,
+como Android Studio), no el de Expo Go —que no trae los módulos nativos de la
+app—: el teléfono anuncia por mDNS un servicio con **el nombre del QR**, y sólo
+ése se vincula (`adb pair`); después se conecta al `_adb-tls-connect` de su
+IP. adb **no reconecta solo** a un teléfono ya vinculado (el puerto cambia cada
+vez que se prende la depuración), por eso `listar` conecta lo que se anuncia.
+Una build de desarrollo se instala **una vez** a pedido (`expo prebuild` si
+falta `android/`, `gradlew app:installDebug` para la ABI del teléfono, con el
+entorno sin credenciales: Gradle corre scripts del repo); de ahí en más el
+JavaScript llega del Metro de la sesión y cada edición de un agente se recarga
+en el teléfono. "Abrir" tiende `adb reverse`: el 8081 del teléfono al Metro
+**interno** (detrás del proxy del selector) y cada puerto de los servicios
+vivos del repo al mismo puerto de acá, porque el bundle ya trae la API en
+`127.0.0.1:<puerto>`; nada se expone a la red local. Metro con `--web` sirve
+igual el bundle de Android. Samsung con carpeta segura: `pm list packages` sin
+usuario falla ("user 150"); todo va con `--user current`.
+
+**El teléfono se ve en vivo en el IDE y se señala como la web** (`Espejo.tsx`,
+modo "Teléfono en vivo" del servicio `movil`; "Navegador (web)" queda como
+segunda opción). La pantalla es `screenrecord --output-format=h264
+--time-limit=0` pasado a MJPEG por ffmpeg y servido como
+`multipart/x-mixed-replace` a un `<img>`: sin decodificador en el navegador ni
+dependencias. Tres trampas de ffmpeg que ya costaron: **sin `-fflags
+nobuffer`** (con él el decodificador no suelta ni un cuadro), `-pix_fmt
+yuvj420p` (el H.264 del teléfono viene en rango limitado y el codificador de
+JPEG lo rechaza) y el cierre de la captura va en el `close` de la
+**respuesta** —el del pedido llega apenas se leyó el GET y la captura quedaba
+grabando—. La vista "se pegaba" por tres retenciones que se suman: el parser
+de H.264 crudo no cierra un cuadro hasta que empieza el siguiente (cuando el
+teléfono se calla 12 ms se le escribe un **AUD** que lo cierra), el
+decodificador con hilos guarda un cuadro por hilo (`-threads 1`), y Chrome
+pinta una parte de un multipart recién al ver el **borde siguiente** (el borde
+va después de cada cuadro). Medido por el proxy de Vite: de 1 JPEG cada 9
+envíos a uno por cuadro, ~20 por segundo. Los toques van por una `adb shell`
+abierta por teléfono (~80 ms contra ~140 lanzando adb cada vez).
+
+**El espejo fluido es scrcpy, no `screenrecord`** (`scrcpy.ts`, `espejo-ws.ts`,
+`ws.ts`; `brew install scrcpy`). Lo de arriba sigue como **respaldo** cuando no
+está instalado o el navegador no decodifica H.264. El primer motor no se podía
+afinar hasta verse natural, por cuatro causas medidas que se suman: el H.264
+crudo no dice dónde termina un cuadro (el AUD por silencio **partía cuadros**
+por Wi-Fi: "corrupt decoded frame"), recodificar a JPEG limitaba a 20 fps lo
+que el teléfono daba a 50, `adb shell input` arranca una JVM por toque y no
+sabe arrastrar, y cada toque como pedido HTTP por el proxy de Vite tenía picos
+de 61 ms (p90). `scrcpy-server` manda **cada paquete de MediaCodec con su
+tamaño y banderas** (config/clave), recibe toques bajar/mover/subir, rueda
+nativa y texto UTF-8 (llegan las tildes), y todo viaja por **un WebSocket**
+(video hacia el navegador, toques hacia el teléfono, en orden); el navegador
+decodifica con WebCodecs y dibuja en un canvas. Medido en el navegador: primer
+cuadro 169 ms después de empezar a arrastrar (antes ~300, y recién al soltar),
+~55 fps con mediana de 18 ms. Lo que queda es el Wi-Fi: por USB baja más.
+
+Reglas que ya costaron: el protocolo es interno y **cambia entre versiones** —la
+versión se lee del `scrcpy` instalado, y `scrcpy.test.ts` fija los bytes que
+esperan los tests del propio scrcpy—; `RESET_VIDEO` antes de que exista la
+captura **tira abajo el servidor** (NPE en 4.1), así que sólo se pide para
+espectadores que llegan tarde o se atrasaron; el socket de video va en pausa
+hasta tener el lector (un socket que fluye sin oyentes pierde el códec); la
+config (SPS/PPS) va pegada adelante del cuadro clave, que es como la espera
+WebCodecs en Annex B; y el WebSocket **verifica el `Origin`**: no pasa por CORS,
+y sin eso cualquier página podría manejar el teléfono. Una sesión por teléfono,
+compartida, que se cierra 5 s después del último espectador; si el navegador se
+atrasa, se saltan cuadros hasta el próximo clave en vez de acumular demora.
+`KEY_LATENCY` del encoder se midió y no cambia nada en el S24.
+
+**La depuración inalámbrica se cae y vuelve, y todo tiene que volver con ella.**
+Al bloquearse el teléfono o cortarse el Wi-Fi, adb reconecta —a veces en otro
+puerto, a veces en el mismo— y cada reconexión es una conexión nueva (otro
+`transport_id`): los túneles de `adb reverse` son de la conexión, así que la
+app se quedaba sin Metro ni API hasta que alguien apretara "Abrir la app". Por
+eso se recuerda **qué app** se abrió en cada teléfono (por IP, en
+`data/proyectos/.dispositivos.json`, sobrevive a un reinicio del servidor), los
+túneles se **calculan en el momento** con los puertos de ahora (el Metro cambia
+de puerto al reiniciarse el servicio) y se re-tienden cuando cambia la
+conexión —la clave es serial + `transport_id`: con el serial solo, una
+reconexión en el mismo puerto pasaba por inadvertida—. Lo vigila un intervalo
+de 10 s en el servidor, con o sin el IDE abierto (medido: 8 s). Del lado del
+IDE, la pantalla se lee con `fetch` y no con un `<img>` sobre el multipart: un
+`<img>` cuyo stream termina se queda con el último cuadro y no avisa, así que
+la vista parecía viva y estaba congelada; ahora dice "reconectando" y vuelve
+sola. Una pantalla animada saca 30 cuadros por segundo: se mandan ~16 y
+el último de una ráfaga nunca se pierde. Clic = `input tap`, arrastrar =
+`input swipe`, rueda = swipe, teclado = `input text` (sólo ASCII: una tilde no
+llega, y se avisa). **Seleccionar** lee el árbol de accesibilidad
+(`uiautomator dump`, ~3 s, una vez por activación; el resaltado se calcula en
+el navegador) y al elegir le pregunta a la app, por el depurador de Hermes que
+expone Metro, qué componentes dibujan esos textos (`inspector-rn.ts`,
+`Runtime.evaluate` sobre el hook de DevTools): sale
+`LoginScreen(./login.tsx)` y el chat recibe la misma forma que un elemento
+web. Metro rechaza el WebSocket sin `Origin` local y el `WebSocket` de Node no
+deja ponerlo: hay un cliente mínimo sobre `http`.
+
+**Reinstalar la build de desarrollo siempre pasa por `expo prebuild`**
+(`Dispositivos.instalar`), aunque `android/` ya exista. Antes sólo se hacía si
+faltaba la carpeta, y un módulo nativo nuevo (expo-camera) o un plugin de
+`app.json` no llegaban a la build: se compilaba el `android/` viejo y la app
+seguía usando la cámara del sistema sin que nada fallara. Sin `--clean` es
+idempotente (58 de 443 tareas de Gradle al reinstalar con un módulo nuevo).
+
+**Depurar la app móvil en el teléfono: herramientas acotadas, no un `adb shell`**
+(`packages/tools/src/codigo/telefono.ts`, `apps/server/src/depuracion-movil.ts`,
+pestaña Mobile → Depuración). El teléfono es el de una persona —sus mensajes,
+sus fotos, las notificaciones de todas sus apps—: un shell libre dejaba a un
+agente leer `/sdcard`, el texto de las notificaciones (`dumpsys notification`) o
+desinstalar cosas. Hay ocho herramientas y **todas miran sólo la app del
+repo**: `logs_del_telefono`, `estado_de_la_app`, `archivos_de_la_app` (por
+`run-as`: su sandbox, sólo en la build de desarrollo), `consultar_base_de_la_app`
+(copia de la base **con su `-wal`** —con journal WAL lo último escrito vive ahí—
+abierta `-readonly -safe`), `captura_del_telefono` (sólo con la app al frente y
+la pantalla encendida), `adb_diagnostico` (allowlist por token atada al
+paquete), `reiniciar_app` y `limpiar_datos_de_la_app` (pide aprobación: se lleva
+la cola offline sin sincronizar). El panel del IDE usa **la misma
+implementación**; dos copias de las reglas divergen. Se registran sólo si hay
+adb, y los logs tapan JWT, `Bearer` y claves.
+
+**Una herramienta nueva tiene que llegar al agente que ya existe.** El
+Mejorador (el agente del chat) se crea una vez, y `crearMejorador` le sumaba
+herramientas sólo si alguien lo volvía a crear: el de INSPIA se quedó sin las
+del teléfono. Ahora `startRun` lo pone al día antes de cada pedido del chat. Y
+**cuándo usarlas** va en el resumen de código de cada turno
+(`bloqueDeTelefono`, sólo si el repo tiene app móvil y el rol las tiene), no
+sólo en el prompt: el prompt de un rol se guarda al crearlo, así que uno viejo
+nunca se enteraba de que tenía algo nuevo. Los roles de las plantillas no se
+actualizan solos —la plantilla se aplica al generar el equipo—: sumarles
+herramientas a un equipo ya armado lo decide una persona desde Empresa.
+
+Tres cosas medidas en el S24 que no se ven leyendo el código: `logcat --uid`
+**no devuelve nada del buffer principal** (sí del de crashes), así que se lee
+`-v uid` y se filtra en el servidor —las líneas de otras apps no salen de
+`lineasDeLaApp`—, lo que además incluye los procesos anteriores que crashearon;
+en React Native con la arquitectura nueva el **`console.log` de JavaScript no
+pasa por logcat** (no hay `ReactNativeJS`) sino por el depurador, así que
+`ConsolaJs` (`inspector-rn.ts`) se engancha a Hermes por Metro con
+`Runtime.enable` y guarda `console.*` y las excepciones; y un crash se muestra
+**desde su comienzo** (señal, causa, hilo, backtrace, sin registros del
+procesador ni rutas hasheadas): la cola de un tombstone son cien marcos de
+libart que no dicen nada. Con la pantalla apagada (`mWakefulness=Dozing`) la
+app puede quedar desconectada del Metro y una captura sale negra: el estado lo
+dice y la captura se niega.
+
+**El AAB de producción lo arma la persona, con un clic, y se verifica antes de
+entregarlo** (`aab.ts`, modo "Build de producción" del servicio `movil`). Es el
+procedimiento que el proyecto ya tenía escrito (`mobile/BUILD-AAB.md` en
+INSPIA) sin las trampas que ahí se documentan a mano:
+
+- **Se construye una copia exacta** (`git archive` del commit, o de una
+  instantánea si la persona marca incluir lo no commiteado) en `tmp/builds/`,
+  que se borra al terminar. Reproducible —el resultado dice de qué commit
+  salió—, a salvo de un agente que edita a mitad del build y del Metro de la
+  vista previa, y sin el bundle viejo que Gradle da por "UP-TO-DATE". Las
+  dependencias se clonan (copy-on-write) de la sesión si el lockfile coincide.
+- **`.env.prod` entra sólo al proceso del build**, leído de la carpeta de la
+  persona: no se copia, no se guarda y **no pasa por `redirigirUrlsLocales`**
+  (un `127.0.0.1` horneado en producción es una app que no anda). Expo no pisa
+  variables que ya están en el entorno.
+- **La firma no pasa por el orquestador**: Gradle lee
+  `~/.gradle/gradle.properties`; si el proyecto trae `scripts/apply-signing.mjs`
+  (el prebuild `--clean` borra la firma de release) se corre.
+- **Se verifica lo que Play mira**: paquete y versión adentro del AAB, versionCode
+  mayor que el del AAB anterior (el último de `salida/builds/android/` o, si no
+  hay, el más nuevo de `build-artifacts/` de la persona), certificado que no sea
+  el de depuración **y el mismo SHA256 que el anterior**, ningún permiso de
+  `blockedPermissions`, y el bundle apuntando a producción: cada `EXPO_PUBLIC_*`
+  de `.env.prod` adentro, ningún valor de desarrollo que difiera, ninguna URL de
+  la vista previa. Los valores nunca se muestran: sólo los nombres. Una
+  verificación en rojo marca el build como fallido ("no lo subas").
+
+El manifiesto de un AAB está en el protobuf de aapt2: `aapt2 dump` no lo lee
+adentro de un bundle y `bundletool` no suele estar, así que hay un lector de
+protobuf mínimo (`parsearManifiestoProto`). `keytool` va con
+`-J-Duser.language=en`: en esta máquina contesta "Propietario". El AAB queda en
+`salida/builds/android/<app>-<versión>-<code>.aab` con un `.json` al lado (commit,
+sha256, certificado, verificaciones), **no** marcado como generado: un agente no
+lo puede borrar. Si todo pasa, `app.json` de la sesión queda con la versión
+nueva **sin commitear** —la persona la commitea con el release— y sólo si nadie
+lo tocó durante el build. Subir a Play sigue siendo de la persona.
+
 **El chat tiene conversaciones** (`foco.conversacionId`). Cada pedido es una
 corrida nueva y el agente arranca sin memoria, así que los pedidos anteriores
 de la misma conversación viajan en el mensaje (`Runtime.historiaDeConversacion`:

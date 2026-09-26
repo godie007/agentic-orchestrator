@@ -40,6 +40,8 @@ import {
   createSkillTools,
   crearHerramientasDeContexto,
   crearHerramientasDeCodigo,
+  crearHerramientasDeTelefono,
+  type TelefonoStorage,
   hayAislamiento,
   resolverEnWorktree,
   mapaDeContextoEnPrompt,
@@ -57,6 +59,9 @@ import {
   type ResultadoMigracion,
 } from "./directorios.js";
 import { RepoStore, type EventoDeCodigo } from "./repos.js";
+import { Dispositivos, detectarAdb, paqueteDeLaApp, tunelesPara } from "./dispositivos.js";
+import { crearTelefonoStorage } from "./depuracion-movil.js";
+import { ConstructorDeAab, type ContextoAab } from "./aab.js";
 import { ServiciosVivos, type EntornoDeArranque, type VistaDeServicio } from "./servicios.js";
 import { ControlDeVersiones } from "./scm.js";
 import { crearFabricaOAuth, olvidarOAuth } from "./mcp-oauth.js";
@@ -143,6 +148,10 @@ export class Runtime {
 
   /** Backend, frontend, app móvil: lo que está levantado para la vista previa. Ver `servicios.ts`. */
   readonly servicios: ServiciosVivos;
+  /** El celular de la persona, vinculado por QR, como vista previa de una app móvil. */
+  readonly dispositivos: Dispositivos;
+  /** El AAB de producción de una app móvil, a pedido de la persona. */
+  readonly aab = new ConstructorDeAab();
 
   /** Stage, commit, stash y ramas sobre la sesión, desde el IDE. Ver `scm.ts`. */
   readonly scm: ControlDeVersiones;
@@ -167,6 +176,13 @@ export class Runtime {
     this.directorios = new Directorios(env.proyectosDir, (id) => store.getCompany(id)?.name ?? null);
     this.exports = new ExportStore(disposicionPorProyecto(this.directorios));
     this.repos = new RepoStore(store, this.directorios, (evento) => this.broadcastCodigo(evento));
+    this.dispositivos = new Dispositivos(undefined, undefined, undefined, join(env.proyectosDir, ".dispositivos.json"));
+    // Los túneles de un teléfono se calculan con los puertos de ahora: si el
+    // Metro se reinició en otro puerto, el túnel se corrige solo.
+    this.dispositivos.mantenerTuneles(({ repoId, servicioId }) => {
+      const { metro, puertos } = this.servicios.puertosParaDispositivo(repoId, servicioId);
+      return metro == null ? null : tunelesPara(metro, puertos);
+    });
     this.servicios = new ServiciosVivos(join(env.proyectosDir, ".servicios-vivos.json"), (evento) =>
       this.broadcastCodigo({
         tipo: "servicio",
@@ -310,6 +326,41 @@ export class Runtime {
     for (const tool of crearHerramientasDeCodigo(crearCodigoStorage(this.depsDeCodigo(companyId)))) {
       tools.register(tool);
     }
+    // Las del teléfono, sólo con adb en la máquina: sin adb no hay cómo cumplirlas.
+    if (this.dispositivos.disponible) {
+      for (const tool of crearHerramientasDeTelefono(this.telefonoStorage(companyId))) tools.register(tool);
+    }
+  }
+
+  /** adb acotado a la app del repo: lo usan las herramientas de los agentes y el panel de depuración del IDE. */
+  telefonoStorage(companyId: string): TelefonoStorage {
+    return crearTelefonoStorage({
+      dispositivos: this.dispositivos,
+      tmp: this.directorios.sub(companyId, "tmp", true),
+      resolverRepo: (nombre) => {
+        const repos = this.store.listRepositorios(companyId);
+        const repo = nombre
+          ? repos.find((r) => r.id === nombre || r.nombre.toLowerCase() === nombre.toLowerCase() || r.slug === nombre)
+          : repos.length === 1
+            ? repos[0]
+            : repos.find((r) => r.servicios.some((s) => s.tipo === "movil"));
+        if (!repo) return { ok: false, motivo: nombre ? `No hay un repo "${nombre}".` : "El proyecto no tiene un repo con app móvil." };
+        const sesion = this.repos.sesionAbierta(repo.id, companyId);
+        if (!sesion) return { ok: false, motivo: `El repo ${repo.nombre} no tiene una sesión abierta.` };
+        return { ok: true, repo, worktree: this.repos.rutaWorktree(sesion) };
+      },
+      guardarEnSalida: async (nombre, carpeta, bytes) =>
+        (await this.exports.forCompany(companyId).save({ filename: nombre, folder: carpeta, bytes })).path,
+      metroDe: (repo, servicio) => this.servicios.puertosParaDispositivo(repo.id, servicio.id).metro,
+      reabrir: async (repo, servicio, serial) => {
+        const sesion = this.repos.sesionAbierta(repo.id, companyId);
+        const paquete = sesion ? await paqueteDeLaApp(join(this.repos.rutaWorktree(sesion), servicio.carpeta)) : null;
+        if (!paquete) throw new Error("La app no declara su paquete de Android.");
+        const { metro, puertos } = this.servicios.puertosParaDispositivo(repo.id, servicio.id);
+        if (metro == null) throw new Error(`${servicio.nombre} no está levantado: la app baja el JavaScript de su Metro. Lo levanta una persona desde la pestaña Código.`);
+        await this.dispositivos.abrir(serial, { paquete, metro, puertos, destino: { repoId: repo.id, servicioId: servicio.id } });
+      },
+    });
   }
 
   /**
@@ -589,6 +640,36 @@ export class Runtime {
 
   async prepararServicio(repo: Repositorio, servicioId: string): Promise<void> {
     await this.servicios.preparar(await this.entornoDeArranque(repo, servicioId));
+  }
+
+  /** La carpeta de un servicio en el worktree de la sesión, y el `tmp` del proyecto. */
+  carpetaDeServicio(repo: Repositorio, servicioId: string): { carpeta: string; tmp: string } {
+    const sesion = this.repos.sesionAbierta(repo.id, repo.companyId);
+    const servicio = repo.servicios.find((s) => s.id === servicioId);
+    if (!sesion || !servicio) throw new Error("No hay una sesión abierta con ese servicio.");
+    return { carpeta: join(this.repos.rutaWorktree(sesion), servicio.carpeta), tmp: this.directorios.sub(repo.companyId, "tmp", true) };
+  }
+
+  /** Todo lo que necesita armar un AAB: la sesión, su git, la carpeta de la persona y la salida. */
+  contextoAab(repo: Repositorio, servicioId: string): ContextoAab {
+    const sesion = this.repos.sesionAbierta(repo.id, repo.companyId);
+    const servicio = repo.servicios.find((s) => s.id === servicioId);
+    if (!sesion || !servicio) throw new Error("No hay una sesión abierta con ese servicio.");
+    if (servicio.tipo !== "movil") throw new Error(`${servicio.nombre} no es una app móvil.`);
+    const adb = detectarAdb();
+    return {
+      companyId: repo.companyId,
+      repo,
+      servicio,
+      worktree: this.repos.rutaWorktree(sesion),
+      gitSesion: this.repos.contextoGit(sesion, repo),
+      origen: repo.origen.tipo === "local" ? join(repo.origen.ruta, servicio.carpeta) : null,
+      tmp: this.directorios.sub(repo.companyId, "tmp", true),
+      salida: this.exports.dirDeEmpresa(repo.companyId),
+      urlSalida: `/api/companies/${repo.companyId}/exports`,
+      sdk: adb ? join(adb, "..", "..") : null,
+      instantanea: () => this.repos.instantanea(sesion, repo, "build-aab"),
+    };
   }
 
   async arrancarServicio(repo: Repositorio, servicioId: string): Promise<VistaDeServicio> {
@@ -1155,6 +1236,14 @@ export class Runtime {
     if (!company) throw new Error(`No existe la empresa "${input.companyId}".`);
 
     const runtime = await this.companyRuntime(company.id);
+    // El chat del IDE corre con el Mejorador: se lo pone al día antes de cada
+    // pedido. Las herramientas nuevas (las del teléfono, por ejemplo) sólo le
+    // llegaban si alguien apretaba "crear" otra vez, y uno creado antes no
+    // las tenía nunca.
+    if (input.foco) {
+      const rol = this.store.listRoles(company.id).find((r) => r.id === input.foco?.rolId);
+      if (rol?.name === MEJORADOR_DE_CODIGO.nombre) await this.crearMejorador(company.id);
+    }
     const config: CompanyConfig = {
       company,
       departments: this.store.listDepartments(company.id),
@@ -2107,6 +2196,7 @@ export class Runtime {
 
   async shutdown(): Promise<void> {
     this.servicios.detenerTodos();
+    this.dispositivos.detenerCapturas();
     for (const active of this.runs.values()) active.orchestrator.stop("Servidor detenido.");
     await Promise.all([...this.companies.values()].map((runtime) => runtime.mcp.disconnectAll()));
   }

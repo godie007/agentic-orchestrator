@@ -28,6 +28,7 @@ export { ejecutarComando, entornoDeComando, entornoDeServicio, hayAislamiento, p
 export { mapaDelCodigo, extraerSimbolos, olvidarIndice } from "./indice.js";
 export { resolverEnWorktree } from "./rutas.js";
 export { globARegex } from "./glob.js";
+export { crearHerramientasDeTelefono, HERRAMIENTAS_DE_TELEFONO, type TelefonoStorage } from "./telefono.js";
 
 /**
  * Las herramientas para programar sobre un repo cargado.

@@ -18,7 +18,10 @@ await runtime.repos.podar(store.listCompanies().map((company) => company.id));
 // reinicio de `tsx watch` no los mata: van en su propio grupo de procesos).
 const huerfanos = await runtime.servicios.barrerHuerfanos();
 // Y los de este servidor mueren con él, se cierre como se cierre.
-process.on("exit", () => runtime.servicios.detenerTodos());
+process.on("exit", () => {
+  runtime.servicios.detenerTodos();
+  runtime.dispositivos.detenerCapturas();
+});
 const misiones = new MisionScheduler(store, runtime, runtime.correo, env.appUrl, env.misionTickMs);
 
 // El armado del Fastify vive en `construirApp`, compartido con los tests.

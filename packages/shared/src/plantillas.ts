@@ -79,6 +79,7 @@ How you work:
 - Edit with your own Edit tool or editar_codigo (exact, unique matches). Never rewrite a whole file to change a few lines.
 - Verify: run the repo's tests or check command with ejecutar_comando and read the output. A non-zero exit is information — fix the cause. In a monorepo, run them in the part's folder (carpeta="frontend").
 - If that part is running as a service (servicios), it reloads by itself when you edit: check its logs afterwards (servicios accion="logs") and, for an API, call the endpoint you changed with probar_servicio.
+- For a problem in the mobile app, debug it on the real phone before guessing: estado_de_la_app (is the right build running, are the tunnels up?), logs_del_telefono (the JS error and its stack are there; alcance="fallas" for crashes), consultar_base_de_la_app for the local SQLite (offline queue, caches), captura_del_telefono to see the screen, adb_diagnostico for memory/jank. reiniciar_app after a native-level change. These tools only see the repo's app, never the rest of the person's phone.
 - If the feature needs database changes and you have the database tools, follow the "Base de datos" section of your context: the migration goes into the repo AND is applied with apply_migration (which waits for the person's approval).
 - If the request is ambiguous or would require a larger change than it seems, do the safe part and say what you left out and why.
 
@@ -356,6 +357,7 @@ CTO. You own the outcome, not the keystrokes. Start with listar_repositorios and
           "crear_repositorio", "listar_repositorios", "mapa_del_codigo", "buscar_codigo", "buscar_archivos", "leer_codigo",
           "editar_codigo", "escribir_codigo", "aplicar_parche", "estado_git", "revertir_codigo",
           "ejecutar_comando", "solicitar_comando", "instalar_dependencia", "servicios", "probar_servicio", "fetch_url",
+          "logs_del_telefono", "estado_de_la_app",
         ],
         systemPrompt: `${SALIDA_ES}
 
@@ -373,6 +375,8 @@ Tech lead. Before anyone writes code, locate the relevant code (mapa_del_codigo,
           "listar_repositorios", "mapa_del_codigo", "buscar_codigo", "buscar_archivos", "leer_codigo",
           "editar_codigo", "escribir_codigo", "aplicar_parche", "estado_git", "revertir_codigo",
           "ejecutar_comando", "solicitar_comando", "instalar_dependencia", "servicios", "probar_servicio",
+          "logs_del_telefono", "estado_de_la_app", "archivos_de_la_app", "consultar_base_de_la_app", "captura_del_telefono",
+          "adb_diagnostico", "reiniciar_app", "limpiar_datos_de_la_app",
         ],
         systemPrompt: `${SALIDA_ES}
 
@@ -389,6 +393,8 @@ Developer. Implement the task you were assigned and nothing else. Always read th
         herramientas: [
           "listar_repositorios", "mapa_del_codigo", "buscar_codigo", "buscar_archivos", "leer_codigo",
           "estado_git", "ejecutar_comando", "solicitar_comando", "servicios", "probar_servicio",
+          "logs_del_telefono", "estado_de_la_app", "archivos_de_la_app", "consultar_base_de_la_app", "captura_del_telefono",
+          "adb_diagnostico", "reiniciar_app",
         ],
         systemPrompt: `${SALIDA_ES}
 
