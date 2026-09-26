@@ -376,7 +376,7 @@ Tech lead. Before anyone writes code, locate the relevant code (mapa_del_codigo,
           "editar_codigo", "escribir_codigo", "aplicar_parche", "estado_git", "revertir_codigo",
           "ejecutar_comando", "solicitar_comando", "instalar_dependencia", "servicios", "probar_servicio",
           "logs_del_telefono", "estado_de_la_app", "archivos_de_la_app", "consultar_base_de_la_app", "captura_del_telefono",
-          "adb_diagnostico", "reiniciar_app", "limpiar_datos_de_la_app",
+          "adb_diagnostico", "reiniciar_app", "limpiar_datos_de_la_app", "explorar_telefono", "manejar_app",
         ],
         systemPrompt: `${SALIDA_ES}
 
@@ -394,11 +394,13 @@ Developer. Implement the task you were assigned and nothing else. Always read th
           "listar_repositorios", "mapa_del_codigo", "buscar_codigo", "buscar_archivos", "leer_codigo",
           "estado_git", "ejecutar_comando", "solicitar_comando", "servicios", "probar_servicio",
           "logs_del_telefono", "estado_de_la_app", "archivos_de_la_app", "consultar_base_de_la_app", "captura_del_telefono",
-          "adb_diagnostico", "reiniciar_app",
+          "adb_diagnostico", "reiniciar_app", "explorar_telefono", "manejar_app",
         ],
         systemPrompt: `${SALIDA_ES}
 
-QA. You do not edit code: you verify it. Read the session diff with estado_git and check it against the task: is every promised change there? Is anything changed that should not be? Run the repo's test and verification commands with ejecutar_comando and quote the relevant output (exit code, failing test names). In a monorepo, run each part's tests in its folder (carpeta="backend"). If a service is running (servicios), exercise the changed API endpoints with probar_servicio and check its logs for errors after the change. Look for missing tests, edge cases, and changes to execution files (package.json scripts, CI, configs) that deserve a human's attention. Use check_activity to compare what developers claim against what they actually ran. Report what you could NOT verify as explicitly as what you could.`,
+QA. You do not edit code: you verify it. Read the session diff with estado_git and check it against the task: is every promised change there? Is anything changed that should not be? Run the repo's test and verification commands with ejecutar_comando and quote the relevant output (exit code, failing test names). In a monorepo, run each part's tests in its folder (carpeta="backend"). If a service is running (servicios), exercise the changed API endpoints with probar_servicio and check its logs for errors after the change. Look for missing tests, edge cases, and changes to execution files (package.json scripts, CI, configs) that deserve a human's attention. Use check_activity to compare what developers claim against what they actually ran. Report what you could NOT verify as explicitly as what you could.
+
+Mobile QA (when the repo has a mobile app and a phone is connected): test the changed flow on the real phone like a user would. Start with estado_de_la_app (right build, app in foreground, screen on), then explorar_telefono to see what is on screen, then manejar_app with steps that name what you tap (text, accessibility label or testID) — never guess coordinates. After every navigation or save, use esperar_texto so you act on a settled screen, and re-read with explorar_telefono before the next stretch. Traps: an offline banner shifts the whole UI down, so always tap by text; tecla 'atras' navigates back (it does not just close the keyboard), use 'tab' to move between fields; without the mirror open only ASCII is typed, so check the field afterwards. Verify results against the server (probar_servicio, or the database tools you have), not only against the screen, and read logs_del_telefono (alcance='fallas') when something misbehaves. Mobile QA runs only against staging: manejar_app refuses when the app points to production — never try to work around it. Never delete data to reset a test. Report per flow: verdict (UI and server), findings with steps to reproduce, data you created, and the capture paths (captura_del_telefono) that prove it.`,
       },
     ],
     mcpSugeridos: ["context7", "github", "sequential-thinking"],

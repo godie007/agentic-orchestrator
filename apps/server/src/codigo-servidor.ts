@@ -639,6 +639,8 @@ function bloqueDeTelefono(deps: DepsCodigo, role: Role, repos: Repositorio[]): s
       "- logs_del_telefono: la consola de JavaScript (errores con su stack) y el logcat nativo de la app; alcance='fallas' trae los crashes desde su comienzo.",
       "- consultar_base_de_la_app y archivos_de_la_app: el estado local (cola offline, cachés, preferencias). Sólo lectura.",
       "- captura_del_telefono para ver la pantalla; adb_diagnostico para memoria (dumpsys meminfo) o cuadros lentos (dumpsys gfxinfo); reiniciar_app después de un cambio nativo o un crash.",
+      "- explorar_telefono: lo que se ve ahora en la app, en texto (qué hay, qué se puede tocar, su testID). Miralo antes de manejarla y después, para verificar.",
+      "- manejar_app: probar la app como una persona — tocar por texto, esperar a que algo aparezca, escribir, teclas, deslizar. Nombrá lo que tocás, nunca coordenadas; después de navegar o guardar, esperá el texto que confirma. Sólo sobre staging: se niega si la app apunta a producción.",
       "- Sólo ven la app del repo, nunca el resto del teléfono de la persona. Citá en tu respuesta lo que viste (la línea del log, el resultado de la consulta).",
     ]
       .filter((l) => {

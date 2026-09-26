@@ -38,6 +38,7 @@ function servicio(parcial: Partial<Servicio> & Pick<Servicio, "id" | "carpeta" |
     inicio: "/",
     archivosEntorno: [],
     entorno: {},
+    marcadoresProduccion: [],
     ...parcial,
   };
 }

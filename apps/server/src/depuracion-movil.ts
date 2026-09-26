@@ -5,6 +5,9 @@ import { randomBytes } from "node:crypto";
 import type { Repositorio, Servicio } from "@orq/shared";
 import { tokenizar } from "@orq/shared";
 import type { TelefonoStorage } from "@orq/tools";
+import { readFile } from "node:fs/promises";
+import { parsearDotenv } from "@orq/shared";
+import { detectarProduccion, ejecutarPasos, resumirPantalla } from "./qa-movil.js";
 import type { Dispositivos } from "./dispositivos.js";
 import { paqueteDeLaApp } from "./dispositivos.js";
 import { consolaJs } from "./inspector-rn.js";
@@ -191,6 +194,8 @@ export interface DepsDepuracion {
   metroDe(repo: Repositorio, servicio: Servicio): number | null;
   /** Reabre la app con sus túneles (lo mismo que "Abrir la app" en el IDE). */
   reabrir(repo: Repositorio, servicio: Servicio, serial: string): Promise<void>;
+  /** Para los tests: la espera entre pasos de manejar_app. */
+  dormir?: (ms: number) => Promise<void>;
 }
 
 interface Objetivo {
@@ -217,6 +222,32 @@ export function crearTelefonoStorage(deps: DepsDepuracion): TelefonoStorage {
     /not debuggable|is unknown|Could not set capabilities/i.test(salida)
       ? "La app instalada no es la build de desarrollo (no es debuggable): sus archivos sólo se pueden leer con la build de desarrollo. Instalala desde la pestaña Mobile → Dispositivos."
       : null;
+
+  const dormir = deps.dormir ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
+  /** Mirar o tocar sólo con la app al frente y la pantalla prendida: lo demás es de la persona. */
+  const precondiciones = async (o: Objetivo): Promise<string | null> => {
+    const actividad = await shell(o, ["dumpsys", "activity", "activities"]);
+    if (paqueteEnPrimerPlano(actividad.salida) !== o.paquete) {
+      return "La app del repo no está en primer plano: sólo se mira y se toca la app, no el resto del teléfono. Abrila con reiniciar_app.";
+    }
+    const energia = await shell(o, ["dumpsys", "power"]);
+    if (!/mWakefulness=Awake/.test(energia.salida)) return "La pantalla del teléfono está apagada. Que una persona lo desbloquee.";
+    return null;
+  };
+
+  /** Las variables con las que corre la app: sus `.env` y las del servicio. Nunca salen de acá. */
+  const entornoDe = async (servicio: Servicio): Promise<Record<string, string>> => {
+    const variables: Record<string, string> = {};
+    for (const archivo of servicio.archivosEntorno) {
+      try {
+        Object.assign(variables, parsearDotenv(await readFile(archivo, "utf8")));
+      } catch {
+        /* un .env que no está no aporta variables */
+      }
+    }
+    return { ...variables, ...servicio.entorno };
+  };
 
   return {
     async logs(repoArg, pedido) {
@@ -407,6 +438,55 @@ export function crearTelefonoStorage(deps: DepsDepuracion): TelefonoStorage {
         return { ok: false, motivo: error instanceof Error ? error.message : String(error) };
       }
       return { ok: true, texto: `${r.o.paquete} reabierta con sus túneles al Metro y a la API de la sesión. Mirá logs_del_telefono en unos segundos.` };
+    },
+
+    async explorar(repoArg, buscar) {
+      const r = await objetivo(repoArg);
+      if (!r.ok) return r;
+      const falla = await precondiciones(r.o);
+      if (falla) return { ok: false, motivo: falla };
+      try {
+        const { nodos } = await deps.dispositivos.arbol(r.o.serial);
+        return { ok: true, texto: resumirPantalla(nodos, { buscar }) };
+      } catch (error) {
+        return { ok: false, motivo: error instanceof Error ? error.message : String(error) };
+      }
+    },
+
+    async actuar(repoArg, pasos) {
+      const r = await objetivo(repoArg);
+      if (!r.ok) return r;
+      const { o } = r;
+      // QA sólo sobre staging: con la app apuntando a producción, cada toque puede crear datos reales.
+      const prod = detectarProduccion(await entornoDe(o.servicio), o.servicio.marcadoresProduccion ?? []);
+      if (prod.produccion) {
+        return {
+          ok: false,
+          motivo: `La app apunta a producción (${prod.variables.join(", ")}): un agente no la maneja, porque cada toque puede crear datos reales. Pasala a staging o pedile a una persona que lo pruebe.`,
+        };
+      }
+      const falla = await precondiciones(o);
+      if (falla) return { ok: false, motivo: falla };
+      try {
+        const resultado = await ejecutarPasos(pasos, {
+          enFrente: async () => paqueteEnPrimerPlano((await shell(o, ["dumpsys", "activity", "activities"])).salida) === o.paquete,
+          arbol: async () => (await deps.dispositivos.arbol(o.serial)).nodos,
+          tocar: (x, y) => deps.dispositivos.tocar(o.serial, x, y),
+          escribir: (texto) => deps.dispositivos.escribir(o.serial, texto),
+          tecla: (tecla) => deps.dispositivos.tecla(o.serial, tecla),
+          deslizar: (desde, hasta, ms) => deps.dispositivos.deslizar(o.serial, desde, hasta, ms),
+          dormir,
+        });
+        return {
+          ok: true,
+          completo: resultado.ok,
+          bitacora: resultado.bitacora,
+          pantalla: resultado.pantalla,
+          ...(resultado.fallo ? { fallo: resultado.fallo } : {}),
+        };
+      } catch (error) {
+        return { ok: false, motivo: error instanceof Error ? error.message : String(error) };
+      }
     },
 
     async limpiarDatos(repoArg) {

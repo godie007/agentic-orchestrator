@@ -74,6 +74,7 @@ function servicio(candidata: CarpetaCandidata, tipo: TipoServicio, resto: Partia
     inicio: "/",
     archivosEntorno: candidata.archivosEntorno ?? [],
     entorno: {},
+    marcadoresProduccion: [],
     ...resto,
   };
 }

@@ -381,6 +381,12 @@ export const servicioSchema = z.object({
   archivosEntorno: z.array(z.string().min(1).max(1000)).max(8).default([]),
   /** Variables sin secretos que pisan a las de los archivos. `{url:backend}` es la URL de otro servicio. */
   entorno: z.record(z.string().max(2000)).default({}),
+  /**
+   * Textos que, si aparecen en el entorno del servicio, dicen que apunta a
+   * producción: la ref del proyecto de producción, su dominio. Con uno de
+   * ellos presente, un agente no maneja la app (QA sólo sobre staging).
+   */
+  marcadoresProduccion: z.array(z.string().min(5).max(200)).max(20).default([]),
 });
 export type Servicio = z.infer<typeof servicioSchema>;
 

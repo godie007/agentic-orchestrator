@@ -900,7 +900,7 @@ export function correrEnVivo(
   });
 }
 
-export const TECLAS = { atras: 4, inicio: 3, recientes: 187, enter: 66, borrar: 67, menu: 82 } as const;
+export const TECLAS = { atras: 4, inicio: 3, recientes: 187, enter: 66, borrar: 67, menu: 82, tab: 61 } as const;
 
 export interface NodoDePantalla {
   /** Posición en el árbol: sirve de clave estable mientras no se vuelva a leer. */

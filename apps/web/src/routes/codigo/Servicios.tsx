@@ -408,6 +408,7 @@ function FormularioDeServicio({ s, onGuardar }: { s: ServicioConEstado; onGuarda
       .map(([k, v]) => `${k}=${v}`)
       .join("\n"),
   );
+  const [marcadores, setMarcadores] = useState((s.marcadoresProduccion ?? []).join("\n"));
   const [error, setError] = useState<string | null>(null);
   const [guardando, setGuardando] = useState(false);
   const campo = "h-6 w-full rounded border border-line bg-canvas px-1.5 font-mono text-[11px] text-ink outline-none focus:border-accent";
@@ -429,6 +430,12 @@ function FormularioDeServicio({ s, onGuardar }: { s: ServicioConEstado; onGuarda
       if (i < 1) return setError(`"${limpia}" no es CLAVE=valor.`);
       variables[limpia.slice(0, i).trim()] = limpia.slice(i + 1).trim();
     }
+    const marcadoresProduccion = marcadores
+      .split("\n")
+      .map((m) => m.trim())
+      .filter(Boolean);
+    const corto = marcadoresProduccion.find((m) => m.length < 5);
+    if (corto) return setError(`"${corto}" es muy corto para marcar producción (mínimo 5 caracteres): casaría con cualquier cosa.`);
     setGuardando(true);
     try {
       await onGuardar({
@@ -446,6 +453,7 @@ function FormularioDeServicio({ s, onGuardar }: { s: ServicioConEstado; onGuarda
           .map((a) => a.trim())
           .filter(Boolean),
         entorno: variables,
+        marcadoresProduccion,
       });
     } catch (e) {
       setError((e as Error).message);
@@ -498,6 +506,21 @@ function FormularioDeServicio({ s, onGuardar }: { s: ServicioConEstado; onGuarda
             <span className={etiqueta}>Variables extra (sin secretos) · {"{url:backend}"} = URL de otro servicio</span>
             <textarea value={entorno} onChange={(e) => setEntorno(e.target.value)} rows={2} placeholder="EXPO_PUBLIC_API_URL={url:backend}/api" className={`${campo} h-auto py-1`} />
           </label>
+          {s.tipo === "movil" && (
+            <label className="block">
+              <span className={etiqueta}>Marcadores de producción (uno por renglón)</span>
+              <textarea
+                value={marcadores}
+                onChange={(e) => setMarcadores(e.target.value)}
+                rows={2}
+                placeholder="la ref del proyecto de producción, su dominio"
+                className={`${campo} h-auto py-1`}
+              />
+              <span className="mt-0.5 block text-[10px] text-ink-faint">
+                Si alguno aparece en el entorno de la app, los agentes no la manejan: el QA móvil se hace sobre staging.
+              </span>
+            </label>
+          )}
         </>
       )}
       {error && <p className="text-[11px] text-danger">{error}</p>}

@@ -29,6 +29,7 @@ export { mapaDelCodigo, extraerSimbolos, olvidarIndice } from "./indice.js";
 export { resolverEnWorktree } from "./rutas.js";
 export { globARegex } from "./glob.js";
 export { crearHerramientasDeTelefono, HERRAMIENTAS_DE_TELEFONO, type TelefonoStorage } from "./telefono.js";
+export { MAX_PASOS, validarPasos, type PasoDeApp } from "./pasos-app.js";
 
 /**
  * Las herramientas para programar sobre un repo cargado.

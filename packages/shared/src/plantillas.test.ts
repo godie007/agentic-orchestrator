@@ -68,6 +68,19 @@ describe("PLANTILLAS_EQUIPO", () => {
     }
   });
 
+  // Las herramientas de QA móvil no sirven si ningún rol las recibe: un equipo
+  // nuevo de software trae a quien prueba la app en el teléfono y a quien la programa.
+  it("el equipo de software maneja la app móvil: QA la prueba y el programador verifica", () => {
+    const software = plantillaEquipo("desarrollo-software")!;
+    const qa = software.roles.find((rol) => rol.titulo === "QA")!;
+    const programador = software.roles.find((rol) => rol.titulo === "Programador")!;
+    for (const rol of [qa, programador]) {
+      expect(rol.herramientas, rol.titulo).toEqual(expect.arrayContaining(["explorar_telefono", "manejar_app", "captura_del_telefono"]));
+    }
+    expect(qa.systemPrompt).toMatch(/manejar_app/);
+    expect(qa.systemPrompt).toMatch(/explorar_telefono/);
+  });
+
   it("plantillaEquipo busca por id", () => {
     expect(plantillaEquipo("consultora")?.roles.length).toBeGreaterThan(0);
     expect(plantillaEquipo("no-existe")).toBeNull();

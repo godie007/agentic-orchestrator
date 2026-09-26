@@ -1668,7 +1668,7 @@ idempotente (58 de 443 tareas de Gradle al reinstalar con un módulo nuevo).
 pestaña Mobile → Depuración). El teléfono es el de una persona —sus mensajes,
 sus fotos, las notificaciones de todas sus apps—: un shell libre dejaba a un
 agente leer `/sdcard`, el texto de las notificaciones (`dumpsys notification`) o
-desinstalar cosas. Hay ocho herramientas y **todas miran sólo la app del
+desinstalar cosas. Hay ocho herramientas de depuración (más las dos de QA móvil, abajo) y **todas miran sólo la app del
 repo**: `logs_del_telefono`, `estado_de_la_app`, `archivos_de_la_app` (por
 `run-as`: su sandbox, sólo en la build de desarrollo), `consultar_base_de_la_app`
 (copia de la base **con su `-wal`** —con journal WAL lo último escrito vive ahí—
@@ -1678,6 +1678,24 @@ paquete), `reiniciar_app` y `limpiar_datos_de_la_app` (pide aprobación: se llev
 la cola offline sin sincronizar). El panel del IDE usa **la misma
 implementación**; dos copias de las reglas divergen. Se registran sólo si hay
 adb, y los logs tapan JWT, `Bearer` y claves.
+
+**QA móvil: manejar la app por texto, nunca por coordenadas, y sólo sobre
+staging** (`explorar_telefono`, `manejar_app`; reglas puras en
+`apps/server/src/qa-movil.ts`, pasos en `packages/tools/src/codigo/pasos-app.ts`).
+Un toque en (540, 1200) no dice qué se quiso tocar, y cuando la pantalla se
+corre —el banner de «Sin conexión» baja todo ~130 px, aparece el teclado— cae
+en otro botón o afuera de la app. Por eso el agente **nombra** lo que toca
+(texto, descripción de accesibilidad o testID) y el servidor lo ubica en el
+árbol de ese momento; si no está, el paso se corta ahí y devuelve lo que sí se
+ve, sin seguir tocando a ciegas. Los frenos van en el ejecutor: antes de cada
+toque se comprueba que la app siga al frente (si no, lo que hay debajo del dedo
+es de la persona); nunca se toca la franja de las barras del sistema
+(`ZONA_UTIL`); los pasos, las esperas y el texto tienen tope. Y **si el
+entorno de la app apunta a producción, `manejar_app` se niega** —cada toque
+puede crear datos reales—: lo decide `detectarProduccion` con los
+`marcadoresProduccion` del servicio (editables en Servicios, sólo en los de
+tipo móvil) o una variable `*_ENV=production`, y el motivo nombra las
+variables, nunca sus valores. Explorar sí se permite: sólo mira.
 
 **Una herramienta nueva tiene que llegar al agente que ya existe.** El
 Mejorador (el agente del chat) se crea una vez, y `crearMejorador` le sumaba

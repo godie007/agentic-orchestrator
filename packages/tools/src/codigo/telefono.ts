@@ -1,4 +1,5 @@
 import { fail, ok, type RegisteredTool } from "../types.js";
+import { MAX_PASOS, validarPasos, type PasoDeApp } from "./pasos-app.js";
 
 /**
  * Depurar la app móvil del repo en el teléfono de verdad: logs, estado,
@@ -32,6 +33,17 @@ export interface TelefonoStorage {
   diagnostico(repoId: string | undefined, comando: string): Promise<Resultado<{ texto: string }>>;
   reiniciar(repoId: string | undefined): Promise<Resultado<{ texto: string }>>;
   limpiarDatos(repoId: string | undefined): Promise<Resultado<{ texto: string }>>;
+  /** Lo que hay en la pantalla de la app, en texto. */
+  explorar(repoId: string | undefined, buscar: string[]): Promise<Resultado<{ texto: string }>>;
+  /**
+   * Maneja la app con pasos ya validados. `ok: false` es que no se pudo ni
+   * empezar (producción, app cerrada, pantalla apagada); un paso que falla a
+   * mitad de camino vuelve con `completo: false` y lo que se alcanzó a hacer.
+   */
+  actuar(
+    repoId: string | undefined,
+    pasos: PasoDeApp[],
+  ): Promise<Resultado<{ completo: boolean; bitacora: string[]; pantalla: string; fallo?: string }>>;
 }
 
 export const HERRAMIENTAS_DE_TELEFONO = [
@@ -43,6 +55,8 @@ export const HERRAMIENTAS_DE_TELEFONO = [
   "adb_diagnostico",
   "reiniciar_app",
   "limpiar_datos_de_la_app",
+  "explorar_telefono",
+  "manejar_app",
 ] as const;
 
 const REPO = { repo: { type: "string", description: "Nombre o id del repo. Opcional si el proyecto tiene uno solo." } } as const;
@@ -207,5 +221,68 @@ export function crearHerramientasDeTelefono(storage: TelefonoStorage): Registere
     },
   };
 
-  return [logs, estado, archivos, base, captura, diagnostico, reiniciar, limpiar];
+  const explorar: RegisteredTool = {
+    name: "explorar_telefono",
+    description:
+      "Lo que se ve AHORA en la pantalla de la app del repo, en texto: cada elemento con su texto o su descripción de accesibilidad, si se puede tocar y su testID (#id), de arriba abajo. Usalo antes de manejar_app para saber qué nombrar, y después para verificar el resultado. Con «buscar» te dice si esos textos están visibles. Sólo la app del repo en primer plano.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        buscar: { type: "array", items: { type: "string" }, description: "Textos que querés confirmar en pantalla (hasta 10), ej. ['Guardar', 'Sin conexión']." },
+        ...REPO,
+      },
+      additionalProperties: false,
+    },
+    origin: "skill",
+    readOnly: true,
+    requiresApproval: false,
+    async execute(args) {
+      const buscar = (Array.isArray(args.buscar) ? args.buscar : [])
+        .filter((b): b is string => typeof b === "string" && b.trim() !== "")
+        .map((b) => b.trim().slice(0, 120))
+        .slice(0, 10);
+      const r = await storage.explorar(repoDe(args), buscar);
+      return r.ok ? ok(r.texto) : fail(r.motivo);
+    },
+  };
+
+  const manejar: RegisteredTool = {
+    name: "manejar_app",
+    description: [
+      `Maneja la app del repo en el teléfono como lo haría una persona, con hasta ${MAX_PASOS} pasos en orden. Se nombra lo que se toca (su texto, su descripción de accesibilidad o su testID), nunca coordenadas: el servidor lo ubica en la pantalla de ese momento. Pasos:`,
+      "{accion:'tocar_texto', texto, n?, exacto?} — n elige la aparición (1 = la primera de arriba abajo); exacto evita que «Fotos» toque «Fotos del proyecto».",
+      "{accion:'esperar_texto', texto, segundos?} — hasta que aparezca y quede quieto (máx. 30 s). Úsalo después de navegar o de guardar.",
+      "{accion:'escribir', texto} — en el campo con foco (tocalo antes). Sin el espejo abierto sólo llega ASCII.",
+      "{accion:'tecla', tecla:'atras'|'enter'|'tab'|'borrar'} — ojo: 'atras' navega hacia atrás (no sólo cierra el teclado); para pasar al siguiente campo usá 'tab'.",
+      "{accion:'deslizar', direccion:'abajo'|'arriba'|'izquierda'|'derecha'} — 'abajo' muestra lo que está más abajo.",
+      "{accion:'esperar', segundos} — pausa (máx. 10 s).",
+      "Si un paso no encuentra lo que nombraste, se detiene ahí y te dice qué se ve. Devuelve lo hecho y la pantalla final. No funciona si la app apunta a producción ni fuera de la app.",
+    ].join("\n"),
+    inputSchema: {
+      type: "object",
+      properties: {
+        pasos: { type: "array", items: { type: "object" }, description: "Los pasos, en orden (ver la descripción)." },
+        ...REPO,
+      },
+      required: ["pasos"],
+      additionalProperties: false,
+    },
+    origin: "skill",
+    readOnly: false,
+    requiresApproval: false,
+    async execute(args) {
+      const v = validarPasos(args.pasos);
+      if (!v.ok) return fail(v.motivo);
+      const r = await storage.actuar(repoDe(args), v.pasos);
+      if (!r.ok) return fail(r.motivo);
+      const informe = [
+        r.bitacora.length ? `Hecho:\n${r.bitacora.join("\n")}` : "No se alcanzó a hacer ningún paso.",
+        ...(r.fallo ? [`Se detuvo en: ${r.fallo}`] : []),
+        `Pantalla ${r.completo ? "final" : "al detenerse"}:\n${r.pantalla}`,
+      ].join("\n\n");
+      return r.completo ? ok(informe, `${r.bitacora.length} pasos`) : fail(informe);
+    },
+  };
+
+  return [logs, estado, archivos, base, captura, diagnostico, reiniciar, limpiar, explorar, manejar];
 }
