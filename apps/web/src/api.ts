@@ -109,6 +109,7 @@ export interface VerificacionAab {
   detalle: string;
 }
 export interface ResultadoAab {
+  formato?: "aab" | "apk";
   archivo: string;
   url: string;
   bytes: number;
@@ -760,9 +761,18 @@ export const api = {
   limpiarDatosDelTelefono: (repoId: string) => request<{ texto: string }>(`/repos/${repoId}/telefono/limpiar-datos`, { method: "POST" }),
   planDeAab: (repoId: string, servicioId: string) =>
     request<{ plan: PlanDeAab; trabajo: TrabajoAab | null }>(`/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/aab`),
+  eliminarBuilds: (repoId: string, servicioId: string, pedido: { archivos: string[] } | { conservar: number }) =>
+    request<{ borrados: string[]; bytes: number; protegido: string | null }>(
+      `/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/aab/eliminar`,
+      { method: "POST", body: JSON.stringify(pedido) },
+    ),
   trabajoDeAab: (repoId: string, servicioId: string) =>
     request<{ trabajo: TrabajoAab | null }>(`/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/aab/trabajo`),
-  construirAab: (repoId: string, servicioId: string, pedido: { version: string; versionCode: number; incluirCambios: boolean }) =>
+  construirAab: (
+    repoId: string,
+    servicioId: string,
+    pedido: { version: string; versionCode: number; incluirCambios: boolean; formato: "aab" | "apk" },
+  ) =>
     request<{ trabajo: TrabajoAab }>(`/repos/${repoId}/servicios/${encodeURIComponent(servicioId)}/aab`, {
       method: "POST",
       body: JSON.stringify(pedido),
@@ -802,6 +812,7 @@ export const api = {
   // --- Chat de IA y vista previa ---------------------------------------------
 
   crearMejorador: (companyId: string) => request<Role>(`/companies/${companyId}/mejorador`, { method: "POST" }),
+  crearQaMovil: (companyId: string) => request<Role>(`/companies/${companyId}/qa-movil`, { method: "POST" }),
   pedidosDeRepo: (repoId: string, conversacion?: string) =>
     request<Run[]>(`/repos/${repoId}/pedidos${conversacion ? `?conversacion=${encodeURIComponent(conversacion)}` : ""}`),
   conversaciones: (repoId: string) =>

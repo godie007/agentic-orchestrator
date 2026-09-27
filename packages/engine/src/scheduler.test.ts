@@ -550,6 +550,40 @@ describe("Orchestrator", () => {
     expect(await correr(false)).toBe("failed");
   });
 
+  it("un pedido del chat respondido termina ahí: un aviso del sistema que llegó durante el turno no lo hace rehacer", async () => {
+    const { ceo, run, state, bus } = buildScenario();
+    run.foco = { rolId: ceo.id, repoId: "rep_x" };
+    let fotos = 0;
+    const tools = new ToolRegistry();
+    tools.register({
+      name: "sacar_fotos",
+      description: "",
+      inputSchema: { type: "object", properties: {} },
+      origin: "skill",
+      readOnly: false,
+      requiresApproval: false,
+      async execute() {
+        fotos += 10;
+        // Lo que deja el resultado de una aprobación resuelta con el turno en vuelo.
+        await state.forActor(null).sendMessage({ toRoleId: ceo.id, toDepartmentId: null, type: "approval_grant", subject: "Aprobación concedida", body: "Ya se ejecutó.", threadId: null, inReplyTo: null });
+        return { ok: true, content: "10 fotos" };
+      },
+    });
+    state.incorporarHerramienta({ id: "tool_f", name: "sacar_fotos", origin: "skill", description: "", inputSchema: {}, mcpServerId: null, requiresApproval: false, readOnly: false, composicion: null } as never, null);
+    state.updateRoleTools(ceo.id, ["tool_f"]);
+    const providers = new ProviderRegistry();
+    // Cada turno arranca sin memoria: si lo vuelven a convocar, vuelve a sacar fotos.
+    providers.register(new FakeProvider((req) => (alreadyActed(req) ? { text: "Saqué 10 fotos." } : { toolCalls: [{ name: "sacar_fotos", arguments: {} }] })));
+    const orchestrator = new Orchestrator(run, state, { bus, providers, tools, ledger: new RunLedger(run.budgetUsd) });
+    await state.forActor(null).sendMessage({ toRoleId: ceo.id, toDepartmentId: null, type: "human", subject: "Pedido", body: "Tomá 10 fotos.", threadId: null, inReplyTo: null });
+
+    await orchestrator.runContinuous();
+
+    expect(orchestrator.snapshot.status).toBe("completed");
+    expect(state.tick).toBe(1);
+    expect(fotos).toBe(10);
+  });
+
   it("corta la corrida cuando el proveedor rechaza todos los turnos varios ciclos seguidos", async () => {
     const { ceo, run, state, bus } = buildScenario();
 

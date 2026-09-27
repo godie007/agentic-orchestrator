@@ -1,5 +1,8 @@
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parsearCertificado, parsearManifiestoProto, siguienteVersion, subirVersionEnAppJson, verificarBundle } from "./aab.js";
+import { ConstructorDeAab, type ContextoAab, parsearApksigner, parsearBadging, parsearCertificado, parsearManifiestoProto, siguienteVersion, subirVersionEnAppJson, verificarBundle } from "./aab.js";
 
 /**
  * Lo que decide si un AAB se puede subir a Play, sin compilar nada: la versión
@@ -96,5 +99,88 @@ describe("AAB de producción", () => {
 
     const local = verificarBundle(Buffer.from('a="https://inspia.codla.co/api";b="https://prod.supabase.co";c="http://127.0.0.1:4300/api"'), prod, dev);
     expect(local.at(-1)?.ok).toBe(false);
+  });
+});
+
+describe("APK de producción", () => {
+  // Salidas reales de las build-tools 37 sobre un APK de release de INSPIA.
+  it("lee paquete, versión y permisos de aapt2 dump badging", () => {
+    const salida = [
+      "package: name='co.codla.inspia' versionCode='20' versionName='1.0.18' platformBuildVersionName='16' platformBuildVersionCode='36' compileSdkVersion='36' compileSdkVersionCodename='16'",
+      "uses-permission: name='android.permission.CAMERA'",
+      "uses-permission: name='android.permission.ACCESS_FINE_LOCATION'",
+      "uses-permission-sdk-23: name='android.permission.ACCESS_FINE_LOCATION'",
+      "application-label:'INSPIA'",
+    ].join("\n");
+    expect(parsearBadging(salida)).toEqual({
+      paquete: "co.codla.inspia",
+      versionCode: 20,
+      versionName: "1.0.18",
+      permisos: ["android.permission.ACCESS_FINE_LOCATION", "android.permission.CAMERA"],
+    });
+  });
+
+  it("lee la firma v2 de apksigner con la huella en el formato de keytool, para comparar contra un AAB", () => {
+    const salida = [
+      "V2 Signer: certificate DN: CN=INSPIA, OU=CODLA, O=CODLA SAS, L=Quimbaya, ST=Quindio, C=CO",
+      "V2 Signer: certificate SHA-256 digest: 9e5c2a272ff87da34d031dae2a18eb72583909579b141406986c59669a0c9e4b",
+      "V2 Signer: certificate SHA-1 digest: ebfa3dcc2232451a44269da33e9da8a985c6e403",
+    ].join("\n");
+    const cert = parsearApksigner(salida);
+    expect(cert?.propietario).toBe("CN=INSPIA, OU=CODLA, O=CODLA SAS, L=Quimbaya, ST=Quindio, C=CO");
+    const keytool = parsearCertificado(
+      "Owner: CN=INSPIA\n\t SHA256: 9E:5C:2A:27:2F:F8:7D:A3:4D:03:1D:AE:2A:18:EB:72:58:39:09:57:9B:14:14:06:98:6C:59:66:9A:0C:9E:4B\n",
+    );
+    expect(cert?.sha256).toBe(keytool?.sha256);
+  });
+
+  it("un APK sin firmar no tiene certificado", () => {
+    expect(parsearApksigner("DOES NOT VERIFY\nERROR: Missing META-INF/MANIFEST.MF")).toBeNull();
+  });
+});
+
+describe("borrar builds viejos", () => {
+  const armar = () => {
+    const salida = mkdtempSync(join(tmpdir(), "orq-builds-"));
+    const dir = join(salida, "builds", "android");
+    mkdirSync(dir, { recursive: true });
+    const builds = [
+      { archivo: "app-1.0.1-11.aab", fecha: 1 },
+      { archivo: "app-1.0.2-12.apk", fecha: 2 },
+      { archivo: "app-1.0.3-13.aab", fecha: 3 },
+      { archivo: "app-1.0.4-14.aab", fecha: 4 },
+    ];
+    for (const b of builds) {
+      writeFileSync(join(dir, b.archivo), Buffer.alloc(1024));
+      writeFileSync(join(dir, b.archivo.replace(/\.(aab|apk)$/, ".json")), JSON.stringify({ ...b, verificaciones: [] }));
+    }
+    return { salida, dir, ctx: { salida } as ContextoAab };
+  };
+
+  it("conservando los últimos N se lleva archivo y registro de los más viejos", async () => {
+    const { salida, dir, ctx } = armar();
+    const r = await new ConstructorDeAab().eliminar("k", ctx, { conservar: 2 });
+    expect(r.borrados.sort()).toEqual(["app-1.0.1-11.aab", "app-1.0.2-12.apk"]);
+    expect(r.bytes).toBe(2048);
+    expect(existsSync(join(dir, "app-1.0.2-12.apk"))).toBe(false);
+    expect(existsSync(join(dir, "app-1.0.2-12.json"))).toBe(false);
+    expect(existsSync(join(dir, "app-1.0.3-13.aab"))).toBe(true);
+    rmSync(salida, { recursive: true, force: true });
+  });
+
+  it("el más reciente no se borra nunca, ni por nombre ni con conservar=0", async () => {
+    const { salida, dir, ctx } = armar();
+    const c = new ConstructorDeAab();
+    await expect(c.eliminar("k", ctx, { archivos: ["app-1.0.4-14.aab"] })).rejects.toThrow(/más reciente/);
+    await c.eliminar("k", ctx, { conservar: 0 });
+    expect(existsSync(join(dir, "app-1.0.4-14.aab"))).toBe(true);
+    rmSync(salida, { recursive: true, force: true });
+  });
+
+  it("sólo borra lo que está en el historial: un nombre inventado o una ruta no pasan", async () => {
+    const { salida, ctx } = armar();
+    const c = new ConstructorDeAab();
+    await expect(c.eliminar("k", ctx, { archivos: ["../../../etc/passwd"] })).rejects.toThrow(/No están en el historial/);
+    rmSync(salida, { recursive: true, force: true });
   });
 });

@@ -24,5 +24,6 @@ export {
   type ResolverTool,
 } from "./compuestas.js";
 export { crearHerramientasDeTelefono, HERRAMIENTAS_DE_TELEFONO, type TelefonoStorage } from "./codigo/index.js";
+export { crearHerramientasDeR2, HERRAMIENTAS_DE_R2, type R2Storage } from "./codigo/index.js";
 export { MAX_PASOS, validarPasos, type PasoDeApp } from "./codigo/index.js";
 export { crearHerramientasDeCodigo, HERRAMIENTAS_QUE_ESCRIBEN_CODIGO, LINEAS_POR_LECTURA, ejecutarComando, hayAislamiento, perfilSandbox, entornoDeComando, entornoDeServicio, mapaDelCodigo, resolverEnWorktree, type CodigoStorage, type EspacioDeCodigo, type PedidoHttp, type RespuestaHttp, type ResultadoComando, type ServicioParaAgente } from "./codigo/index.js";

@@ -4,7 +4,7 @@ tags: [adr, arquitectura]
 
 # ADR-006 Video en una sola pasada de ffmpeg
 
-**Estado:** aceptada
+**Estado:** aceptada para `export_video` · acotada por [[ADR-012 Usar el Chrome instalado por CDP]] y [[ADR-017 Tres motores de video comparten el reloj]]: el rechazo del navegador vale para seis placas de texto, no para láminas HTML ni para filmar una app
 
 ## Contexto
 

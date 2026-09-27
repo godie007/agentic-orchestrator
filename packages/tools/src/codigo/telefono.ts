@@ -43,6 +43,8 @@ export interface TelefonoStorage {
   actuar(
     repoId: string | undefined,
     pasos: PasoDeApp[],
+    /** El de la corrida: al detenerse, no se toca nada más. */
+    signal?: AbortSignal,
   ): Promise<Resultado<{ completo: boolean; bitacora: string[]; pantalla: string; fallo?: string }>>;
 }
 
@@ -270,10 +272,10 @@ export function crearHerramientasDeTelefono(storage: TelefonoStorage): Registere
     origin: "skill",
     readOnly: false,
     requiresApproval: false,
-    async execute(args) {
+    async execute(args, ctx) {
       const v = validarPasos(args.pasos);
       if (!v.ok) return fail(v.motivo);
-      const r = await storage.actuar(repoDe(args), v.pasos);
+      const r = await storage.actuar(repoDe(args), v.pasos, ctx.signal);
       if (!r.ok) return fail(r.motivo);
       const informe = [
         r.bitacora.length ? `Hecho:\n${r.bitacora.join("\n")}` : "No se alcanzó a hacer ningún paso.",

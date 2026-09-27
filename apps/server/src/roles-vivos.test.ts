@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ids, toolSchema } from "@orq/shared";
+import { ids, QA_MOVIL, toolSchema } from "@orq/shared";
+import { HERRAMIENTAS_QUE_ESCRIBEN_CODIGO } from "@orq/tools";
 import { ProviderRegistry } from "@orq/llm";
 import { Store } from "./db.js";
 import { Runtime } from "./runtime.js";
@@ -150,5 +151,30 @@ describe("actualizarRolEnCorridasVivas", () => {
     // La empresa no tiene ninguna corrida viva: no hay nada que actualizar, y
     // la de la otra empresa no se toca.
     expect(runtime.actualizarRolEnCorridasVivas(companyId, otorgado)).toBe(0);
+  });
+});
+
+describe("crearQaMovil", () => {
+  it("prueba sin editar: no recibe herramientas que escriben código, así que nunca toma el arriendo", async () => {
+    const companyId = await empresaConEquipo();
+    const qa = await runtime.crearQaMovil(companyId);
+    const nombres = store
+      .listTools(companyId)
+      .filter((t) => qa.toolIds.includes(t.id))
+      .map((t) => t.name);
+
+    expect(nombres).toContain("leer_codigo");
+    expect(nombres.every((n) => (QA_MOVIL.herramientas as readonly string[]).includes(n))).toBe(true);
+    expect(nombres.some((n) => HERRAMIENTAS_QUE_ESCRIBEN_CODIGO.has(n))).toBe(false);
+    expect(qa.authority).toBe("executor");
+    expect(store.listDepartments(companyId).find((d) => d.id === qa.departmentId)?.name).toBe("Calidad");
+  });
+
+  it("es uno por empresa: crearlo otra vez devuelve el mismo rol", async () => {
+    const companyId = await empresaConEquipo();
+    const primero = await runtime.crearQaMovil(companyId);
+    const segundo = await runtime.crearQaMovil(companyId);
+    expect(segundo.id).toBe(primero.id);
+    expect(store.listRoles(companyId).filter((r) => r.name === QA_MOVIL.nombre)).toHaveLength(1);
   });
 });

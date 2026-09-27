@@ -29,6 +29,7 @@ export { mapaDelCodigo, extraerSimbolos, olvidarIndice } from "./indice.js";
 export { resolverEnWorktree } from "./rutas.js";
 export { globARegex } from "./glob.js";
 export { crearHerramientasDeTelefono, HERRAMIENTAS_DE_TELEFONO, type TelefonoStorage } from "./telefono.js";
+export { crearHerramientasDeR2, HERRAMIENTAS_DE_R2, type R2Storage } from "./r2.js";
 export { MAX_PASOS, validarPasos, type PasoDeApp } from "./pasos-app.js";
 
 /**

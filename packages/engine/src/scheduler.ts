@@ -235,6 +235,21 @@ export class Orchestrator {
       if (after) {
         return { advanced: true, reason: after };
       }
+
+      // Un pedido del chat que el agente ya respondió termina acá. Si no, un
+      // aviso del sistema —el resultado de una aprobación que se resolvió con
+      // el turno en vuelo— lo volvía a convocar, y el agente, que arranca cada
+      // turno sin memoria del anterior, rehacía el pedido entero: medido con
+      // un agente que sacó otras diez fotos con el chat ya respondido. Lo que
+      // sí tiene que seguir —una aprobación o una pregunta a la persona
+      // todavía abierta— no cierra: la corrida espera y el turno siguiente
+      // recibe la respuesta.
+      const pendientes =
+        this.state.pendingApprovals().length > 0 || this.state.requests.some((pedido) => pedido.status === "pending");
+      if (this.run.foco && this.respondio && !pendientes) {
+        this.finish("completed", "El agente respondió el pedido.");
+        return { advanced: true, reason: this.stopReason ?? "" };
+      }
       this.setStatus("paused");
       return { advanced: true, reason: `ciclo ${this.state.tick} completado` };
     } catch (error) {

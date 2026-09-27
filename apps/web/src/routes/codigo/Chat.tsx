@@ -14,6 +14,7 @@ import {
   PackagePlus,
   ShieldAlert,
   Plus,
+  Smartphone,
   Sparkles,
   Square,
   TextSelect,
@@ -300,12 +301,17 @@ export function ChatDeIA({
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const fondoRef = useRef<HTMLDivElement>(null);
 
-  // Los agentes que pueden editar código: los que tienen `editar_codigo`.
+  // Los agentes del chat: los que editan código (`editar_codigo`) y los que
+  // prueban la app en el teléfono (`manejar_app`), como el QA móvil.
   const editores = useMemo(() => {
-    const idsEditar = new Set(company.tools.filter((t) => t.name === "editar_codigo").map((t) => t.id));
-    return company.roles.filter((r) => r.toolIds.some((id) => idsEditar.has(id)));
+    const ids = new Set(
+      company.tools.filter((t) => t.name === "editar_codigo" || t.name === "manejar_app").map((t) => t.id),
+    );
+    return company.roles.filter((r) => r.toolIds.some((id) => ids.has(id)));
   }, [company]);
   const mejorador = editores.find((r) => r.name === "Mejorador de código");
+  const qaMovil = company.roles.find((r) => r.name === "QA móvil");
+  const tieneAppMovil = repo.repo.servicios.some((s) => s.tipo === "movil");
   const [rolId, setRolId] = useState<string | null>(null);
   const rol = editores.find((r) => r.id === rolId) ?? mejorador ?? editores[0] ?? null;
 
@@ -315,6 +321,15 @@ export function ChatDeIA({
       setRolId(nuevo.id);
       void queryClient.invalidateQueries({ queryKey: ["company", companyId] });
       avisar("Listo: el Mejorador de código ya está en la empresa.", "ok");
+    },
+    onError: (e: Error) => avisar(e.message, "error"),
+  });
+  const crearQaMovil = useMutation({
+    mutationFn: () => api.crearQaMovil(companyId),
+    onSuccess: (nuevo: Role) => {
+      setRolId(nuevo.id);
+      void queryClient.invalidateQueries({ queryKey: ["company", companyId] });
+      avisar("Listo: el QA móvil ya está en la empresa. Pedile qué funcionalidad probar.", "ok");
     },
     onError: (e: Error) => avisar(e.message, "error"),
   });
@@ -601,7 +616,11 @@ export function ChatDeIA({
                   enviar.mutate();
                 }
               }}
-              placeholder="Pedí una mejora… (@ para adjuntar, Enter para enviar, ⇧Enter nueva línea)"
+              placeholder={
+                rol?.name === "QA móvil"
+                  ? "¿Qué funcionalidad querés que pruebe en el teléfono? (@ para adjuntar, Enter para enviar)"
+                  : "Pedí una mejora… (@ para adjuntar, Enter para enviar, ⇧Enter nueva línea)"
+              }
               className="block w-full resize-none bg-transparent px-2 py-1.5 text-[13px] text-ink outline-none placeholder:text-ink-faint"
             />
           </div>
@@ -631,6 +650,17 @@ export function ChatDeIA({
                 className="flex items-center gap-1 rounded border border-dashed border-accent/50 px-1.5 py-0.5 text-[11px] text-accent hover:bg-accent/10"
               >
                 <Sparkles className="size-3" aria-hidden /> Mejorador de código
+              </button>
+            )}
+            {!qaMovil && tieneAppMovil && (
+              <button
+                type="button"
+                onClick={() => crearQaMovil.mutate()}
+                disabled={crearQaMovil.isPending}
+                title="Crea un agente que barre una funcionalidad en el teléfono con el skill de QA del repo, y reporta con evidencia"
+                className="flex items-center gap-1 rounded border border-dashed border-accent/50 px-1.5 py-0.5 text-[11px] text-accent hover:bg-accent/10"
+              >
+                <Smartphone className="size-3" aria-hidden /> QA móvil
               </button>
             )}
             <span className="flex-1" />

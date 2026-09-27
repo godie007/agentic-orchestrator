@@ -453,7 +453,7 @@ export function crearTelefonoStorage(deps: DepsDepuracion): TelefonoStorage {
       }
     },
 
-    async actuar(repoArg, pasos) {
+    async actuar(repoArg, pasos, signal) {
       const r = await objetivo(repoArg);
       if (!r.ok) return r;
       const { o } = r;
@@ -475,8 +475,13 @@ export function crearTelefonoStorage(deps: DepsDepuracion): TelefonoStorage {
           escribir: (texto) => deps.dispositivos.escribir(o.serial, texto),
           tecla: (tecla) => deps.dispositivos.tecla(o.serial, tecla),
           deslizar: (desde, hasta, ms) => deps.dispositivos.deslizar(o.serial, desde, hasta, ms),
-          dormir,
+          // Una espera larga ("esperar 10 s") se corta al detener la corrida.
+          dormir: (ms) =>
+            signal
+              ? Promise.race([dormir(ms), new Promise<void>((r) => signal.addEventListener("abort", () => r(), { once: true }))])
+              : dormir(ms),
           ahora: () => Date.now(),
+          cancelada: () => signal?.aborted ?? false,
         });
         return {
           ok: true,

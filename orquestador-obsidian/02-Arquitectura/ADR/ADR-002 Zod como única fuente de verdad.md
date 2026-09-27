@@ -46,7 +46,7 @@ no compra nada.
 
 ### En contra / lo que se resignó
 - Todo cambio de dominio toca un archivo compartido, y `schema.ts` es largo
-  (~640 líneas).
+  (~1.100 líneas).
 - Zod cuesta algo en tiempo de validación en cada request. Irrelevante a esta
   escala.
 

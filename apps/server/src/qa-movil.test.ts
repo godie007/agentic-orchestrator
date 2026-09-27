@@ -153,6 +153,28 @@ describe("ejecutar los pasos", () => {
     expect(hechos).toEqual(["tocar 0.50,0.22"]);
   });
 
+  it("si la corrida se detiene, no toca nada más aunque queden pasos", async () => {
+    const { puertos, hechos } = telefonoFalso([inicio]);
+    let detenida = false;
+    puertos.cancelada = () => detenida;
+    const tocar = puertos.tocar;
+    puertos.tocar = async (x, y) => {
+      await tocar(x, y);
+      detenida = true; // la persona detuvo la corrida después del primer toque
+    };
+    const r = await ejecutarPasos(
+      [
+        { accion: "tocar_texto", texto: "Fotos", n: 1, exacto: false },
+        { accion: "tecla", tecla: "atras" },
+        { accion: "tecla", tecla: "atras" },
+      ],
+      puertos,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.fallo).toMatch(/se detuvo/);
+    expect(hechos).toEqual(["tocar 0.50,0.22"]);
+  });
+
   it("esperar_texto espera a que aparezca y quede quieto", async () => {
     const moviendose = (y: number) => [nodo("Subida", y)];
     const { puertos } = telefonoFalso([[], moviendose(0.5), moviendose(0.4), moviendose(0.4)]);

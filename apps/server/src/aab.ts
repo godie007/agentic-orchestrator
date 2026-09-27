@@ -10,7 +10,8 @@ import { git } from "./git.js";
 import { argvDeInstalacionLimpia, copiarModulos } from "./servicios.js";
 
 /**
- * El AAB de producción de una app de Expo, armado por la persona desde el IDE.
+ * El build de producción de una app de Expo —el AAB para Play o el APK para
+ * instalar directo (`FormatoAndroid`)—, armado por la persona desde el IDE.
  *
  * Es el procedimiento que un proyecto ya tiene escrito (en INSPIA,
  * `mobile/BUILD-AAB.md`) hecho de una forma que no se puede hacer mal por
@@ -168,6 +169,41 @@ export function parsearCertificado(salida: string): { propietario: string; sha25
   return propietario && sha256 ? { propietario, sha256 } : null;
 }
 
+/**
+ * Qué se entrega: el AAB es lo que se sube a Play; el APK es lo que se instala
+ * directo en un teléfono (distribución por fuera de la tienda, una prueba en el
+ * equipo de un cliente). Salen del mismo código, del mismo `.env.prod` y con la
+ * misma firma, y se verifican igual.
+ */
+export type FormatoAndroid = "aab" | "apk";
+
+/**
+ * `aapt2 dump badging` de un APK. El manifiesto de un APK es XML binario
+ * (AXML), no el protobuf de un AAB, y aapt2 sí lo lee.
+ */
+export function parsearBadging(salida: string): ManifiestoAab {
+  const paquete = /^package: name='([^']+)'/m.exec(salida);
+  const code = /^package:.*\bversionCode='(\d+)'/m.exec(salida)?.[1];
+  const permisos = [...salida.matchAll(/^uses-permission(?:-sdk-23)?: name='([^']+)'/gm)].map((m) => m[1]!);
+  return {
+    paquete: paquete?.[1] ?? null,
+    versionCode: code ? Number(code) : null,
+    versionName: /^package:.*\bversionName='([^']*)'/m.exec(salida)?.[1] ?? null,
+    permisos: [...new Set(permisos)].sort(),
+  };
+}
+
+/**
+ * `apksigner verify --print-certs`. Un APK moderno va firmado con el esquema
+ * v2/v3, que vive fuera del zip: `keytool -jarfile` no lo ve y contesta "no
+ * firmado" sobre un APK que está bien firmado.
+ */
+export function parsearApksigner(salida: string): { propietario: string; sha256: string } | null {
+  const propietario = /certificate DN:\s*(.+)/.exec(salida)?.[1]?.trim();
+  const sha256 = /certificate SHA-256 digest:\s*([0-9a-f]{64})/i.exec(salida)?.[1];
+  return propietario && sha256 ? { propietario, sha256: sha256.toUpperCase().match(/../g)!.join(":") } : null;
+}
+
 export interface Verificacion {
   nombre: string;
   /** `true` pasa, `false` bloquea la entrega, `null` es un aviso para mirar. */
@@ -232,6 +268,8 @@ export interface PlanDeAab {
 }
 
 export interface ResultadoAab {
+  /** Los builds de antes del APK no lo traen: son AAB. */
+  formato?: FormatoAndroid;
   archivo: string;
   url: string;
   bytes: number;
@@ -299,12 +337,42 @@ async function manifiestoDe(aab: string): Promise<ManifiestoAab | null> {
   return buf ? parsearManifiestoProto(buf) : null;
 }
 
+/** Las build-tools más nuevas del SDK que traen aapt2 y apksigner. */
+async function buildTools(sdk: string | null): Promise<string | null> {
+  if (!sdk) return null;
+  try {
+    const versiones = (await readdir(join(sdk, "build-tools"))).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+    const dir = versiones.map((v) => join(sdk, "build-tools", v)).find((d) => existsSync(join(d, "aapt2")) && existsSync(join(d, "apksigner")));
+    return dir ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function sacarDelZip(zip: string, entrada: string): Promise<Buffer | null> {
   return new Promise((resolver) => {
     execFile("unzip", ["-p", zip, entrada], { encoding: "buffer", maxBuffer: 256 * 1024 * 1024, timeout: 60_000 }, (error, stdout) =>
       resolver(error || stdout.length === 0 ? null : stdout),
     );
   });
+}
+
+/**
+ * El APK que dejó `assembleRelease`. Con splits por ABI Gradle deja uno por
+ * arquitectura: para instalar en cualquier teléfono sirve el universal.
+ */
+async function apkGenerado(dir: string): Promise<string> {
+  const unico = join(dir, "app-release.apk");
+  if (existsSync(unico)) return unico;
+  const apks = (await readdir(dir).catch(() => [] as string[])).filter((n) => n.endsWith(".apk"));
+  const universal = apks.find((n) => n.includes("universal"));
+  if (universal) return join(dir, universal);
+  if (apks.length === 1) return join(dir, apks[0]!);
+  throw new Error(
+    apks.length
+      ? `Gradle dejó un APK por arquitectura (${apks.join(", ")}) y ninguno universal: activá universalApk en los splits para distribuir uno solo.`
+      : "Gradle terminó pero no dejó ningún APK.",
+  );
 }
 
 type EnvAppJson = { expo?: { version?: string; android?: { package?: string; versionCode?: number; blockedPermissions?: string[] } } };
@@ -379,10 +447,57 @@ export class ConstructorDeAab {
     try {
       const nombres = (await readdir(dir)).filter((n) => n.endsWith(".json"));
       const lista = (await Promise.all(nombres.map((n) => leerJson<ResultadoAab>(join(dir, n))))).filter((x): x is ResultadoAab => x != null);
-      return lista.sort((a, b) => b.fecha - a.fecha).slice(0, 20);
+      return lista.sort((a, b) => b.fecha - a.fecha);
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Borra builds viejos —el archivo y su registro— para que la salida no
+   * junte un giga de AAB que nadie va a volver a subir. Por nombre (sólo los
+   * que están en el historial: no es una vía para borrar cualquier ruta) o
+   * conservando los últimos N.
+   *
+   * **El más reciente no se borra nunca**: es el "anterior" del próximo build,
+   * de donde salen el `versionCode` mínimo y el certificado contra el que se
+   * compara. Sin él, el próximo build pierde las dos verificaciones que evitan
+   * que Play lo rechace. Tampoco se borra con un build en curso: está por
+   * compararse contra ese historial.
+   */
+  async eliminar(
+    clave: string,
+    ctx: ContextoAab,
+    pedido: { archivos?: string[]; conservar?: number },
+  ): Promise<{ borrados: string[]; bytes: number; protegido: string | null }> {
+    if (this.trabajos.get(clave)?.estado === "construyendo") {
+      throw new Error("Hay un build de producción en curso: se compara contra el historial. Borrá cuando termine.");
+    }
+    const lista = await this.historial(ctx);
+    const protegido = lista[0]?.archivo ?? null;
+    let aBorrar: ResultadoAab[];
+    if (pedido.conservar != null) {
+      aBorrar = lista.slice(Math.max(1, pedido.conservar));
+    } else {
+      const pedidos = new Set(pedido.archivos ?? []);
+      const desconocidos = [...pedidos].filter((n) => !lista.some((b) => b.archivo === n));
+      if (desconocidos.length) throw new Error(`No están en el historial: ${desconocidos.join(", ")}.`);
+      if (protegido && pedidos.has(protegido)) {
+        throw new Error(`${protegido} es el build más reciente: el próximo se compara contra él (versionCode y certificado). No se borra.`);
+      }
+      aBorrar = lista.filter((b) => pedidos.has(b.archivo));
+    }
+    const dir = this.carpetaDeBuilds(ctx);
+    const borrados: string[] = [];
+    let bytes = 0;
+    for (const b of aBorrar) {
+      const archivo = join(dir, b.archivo);
+      bytes += await stat(archivo).then((x) => x.size).catch(() => 0);
+      await rm(archivo, { force: true });
+      await rm(join(dir, b.archivo.replace(/\.(aab|apk)$/, ".json")), { force: true });
+      borrados.push(b.archivo);
+    }
+    return { borrados, bytes, protegido };
   }
 
   /**
@@ -415,11 +530,13 @@ export class ConstructorDeAab {
   construir(
     clave: string,
     ctx: ContextoAab,
-    pedido: { version: string; versionCode: number; incluirCambios: boolean },
+    pedido: { version: string; versionCode: number; incluirCambios: boolean; formato?: FormatoAndroid },
     alTerminar: (t: TrabajoAab) => void = () => {},
   ): TrabajoAab {
     const previo = this.trabajos.get(clave);
-    if (previo?.estado === "construyendo") throw new Error("Ya hay un AAB construyéndose para esta app.");
+    // Uno por app, sea AAB o APK: los dos escriben la versión en la sesión.
+    if (previo?.estado === "construyendo") throw new Error("Ya hay un build de producción construyéndose para esta app.");
+    const etiqueta = (pedido.formato ?? "aab").toUpperCase();
     const t: TrabajoAab = { id: `aab_${randomBytes(4).toString("hex")}`, estado: "construyendo", paso: "Preparando", lineas: [], desde: Date.now(), resultado: null };
     this.trabajos.set(clave, t);
     const anotar = (texto: string) => {
@@ -437,7 +554,11 @@ export class ConstructorDeAab {
         this.archivos.set(clave, join(this.carpetaDeBuilds(ctx), resultado.archivo));
         t.estado = resultado.verificaciones.some((v) => v.ok === false) ? "fallo" : "listo";
         t.paso = t.estado === "listo" ? "Listo" : "Verificación fallida";
-        anotar(t.estado === "listo" ? `✓ AAB listo: ${resultado.archivo}` : "✗ El AAB se armó pero no pasó la verificación: no lo subas a Play.");
+        anotar(
+          t.estado === "listo"
+            ? `✓ ${etiqueta} listo: ${resultado.archivo}`
+            : `✗ El ${etiqueta} se armó pero no pasó la verificación: no lo ${etiqueta === "AAB" ? "subas a Play" : "distribuyas"}.`,
+        );
       })
       .catch((error: unknown) => {
         t.estado = "fallo";
@@ -453,7 +574,7 @@ export class ConstructorDeAab {
 
   private async ejecutar(
     ctx: ContextoAab,
-    pedido: { version: string; versionCode: number; incluirCambios: boolean },
+    pedido: { version: string; versionCode: number; incluirCambios: boolean; formato?: FormatoAndroid },
     dir: string,
     paso: (nombre: string) => void,
     anotar: (texto: string) => void,
@@ -520,14 +641,21 @@ export class ConstructorDeAab {
       paso(`Aplicando la firma de release (${plan.firma})`);
       await correrEnVivo(["node", plan.firma], app, env, anotar);
     }
-    paso("Compilando el AAB (gradlew bundleRelease): tarda varios minutos");
-    await correrEnVivo(["./gradlew", "bundleRelease", "--console=plain"], join(app, "android"), env, anotar, CORTE_MS);
-    const generado = join(app, "android", "app", "build", "outputs", "bundle", "release", "app-release.aab");
-    if (!existsSync(generado)) throw new Error("Gradle terminó pero no dejó app-release.aab.");
+    const formato: FormatoAndroid = pedido.formato ?? "aab";
+    const esApk = formato === "apk";
+    const tools = await buildTools(ctx.sdk);
+    if (esApk && !tools) throw new Error("No hay build-tools con aapt2 y apksigner en el SDK de Android: sin eso no se puede verificar el APK. Instalalas desde el SDK Manager de Android Studio.");
+    const tarea = esApk ? "assembleRelease" : "bundleRelease";
+    paso(`Compilando el ${formato.toUpperCase()} (gradlew ${tarea}): tarda varios minutos`);
+    await correrEnVivo(["./gradlew", tarea, "--console=plain"], join(app, "android"), env, anotar, CORTE_MS);
+    const generado = esApk
+      ? await apkGenerado(join(app, "android", "app", "build", "outputs", "apk", "release"))
+      : join(app, "android", "app", "build", "outputs", "bundle", "release", "app-release.aab");
+    if (!existsSync(generado)) throw new Error(`Gradle terminó pero no dejó app-release.${formato}.`);
 
     // 6. A la salida del proyecto, con nombre que dice qué es.
     paso("Verificando");
-    const nombre = `${plan.paquete.split(".").at(-1)}-${pedido.version}-${pedido.versionCode}.aab`;
+    const nombre = `${plan.paquete.split(".").at(-1)}-${pedido.version}-${pedido.versionCode}.${formato}`;
     const destinoDir = this.carpetaDeBuilds(ctx);
     await mkdir(destinoDir, { recursive: true });
     const destino = join(destinoDir, nombre);
@@ -535,13 +663,15 @@ export class ConstructorDeAab {
     const bytes = await readFile(destino);
 
     const verificaciones: Verificacion[] = [];
-    const manifiesto = await manifiestoDe(destino);
+    const manifiesto = esApk
+      ? parsearBadging((await this.correr([join(tools!, "aapt2"), "dump", "badging", destino])).salida)
+      : await manifiestoDe(destino);
     verificaciones.push({
       nombre: "Paquete y versión",
       ok: manifiesto?.paquete === plan.paquete && manifiesto?.versionCode === pedido.versionCode && manifiesto?.versionName === pedido.version,
       detalle: manifiesto
         ? `${manifiesto.paquete} · versionName ${manifiesto.versionName} · versionCode ${manifiesto.versionCode}`
-        : "No se pudo leer el manifiesto del AAB.",
+        : `No se pudo leer el manifiesto del ${formato.toUpperCase()}.`,
     });
     if (plan.anterior?.versionCode != null) {
       verificaciones.push({
@@ -551,24 +681,31 @@ export class ConstructorDeAab {
       });
     }
 
+    // El certificado según qué archivo sea: el anterior puede ser un AAB aunque ahora se arme un APK.
     const keytool = join(java, "bin", "keytool");
-    const cert = parsearCertificado((await this.correr([keytool, "-J-Duser.language=en", "-printcert", "-jarfile", destino])).salida);
+    const certificadoDe = async (archivo: string) =>
+      archivo.endsWith(".apk")
+        ? tools
+          ? parsearApksigner((await this.correr([join(tools, "apksigner"), "verify", "--print-certs", archivo])).salida)
+          : null
+        : parsearCertificado((await this.correr([keytool, "-J-Duser.language=en", "-printcert", "-jarfile", archivo])).salida);
+    const cert = await certificadoDe(destino);
     verificaciones.push({
       nombre: "Firmado con la clave de subida",
       ok: cert != null && !/Android Debug/i.test(cert.propietario),
       detalle: !cert
-        ? "El AAB no está firmado."
+        ? `El ${formato.toUpperCase()} no está firmado.`
         : /Android Debug/i.test(cert.propietario)
           ? "Está firmado con la clave de DEPURACIÓN: Play lo rechaza. Revisá ~/.gradle/gradle.properties y el script de firma."
           : `${cert.propietario}`,
     });
     if (cert && plan.anterior) {
-      const certAnterior = parsearCertificado((await this.correr([keytool, "-J-Duser.language=en", "-printcert", "-jarfile", plan.anterior.archivo])).salida);
+      const certAnterior = await certificadoDe(plan.anterior.archivo);
       if (certAnterior) {
         verificaciones.push({
-          nombre: "Mismo certificado que el AAB anterior",
+          nombre: `Mismo certificado que el build anterior (${basename(plan.anterior.archivo)})`,
           ok: certAnterior.sha256 === cert.sha256,
-          detalle: certAnterior.sha256 === cert.sha256 ? `SHA256 ${cert.sha256.slice(0, 23)}…` : `Cambió el certificado: Play rechaza la actualización. Antes ${certAnterior.sha256.slice(0, 23)}…, ahora ${cert.sha256.slice(0, 23)}…`,
+          detalle: certAnterior.sha256 === cert.sha256 ? `SHA256 ${cert.sha256.slice(0, 23)}…` : `Cambió el certificado: ${esApk ? "Android no instala el APK encima de la versión anterior" : "Play rechaza la actualización"}. Antes ${certAnterior.sha256.slice(0, 23)}…, ahora ${cert.sha256.slice(0, 23)}…`,
         });
       }
     }
@@ -584,11 +721,13 @@ export class ConstructorDeAab {
           : `Declarados: ${(manifiesto?.permisos ?? []).map((p) => p.replace("android.permission.", "")).join(", ")}. Revisalos contra la ficha de Play.`,
     });
 
-    const bundle = await sacarDelZip(destino, "base/assets/index.android.bundle");
+    const rutaBundle = esApk ? "assets/index.android.bundle" : "base/assets/index.android.bundle";
+    const bundle = await sacarDelZip(destino, rutaBundle);
     if (bundle) verificaciones.push(...verificarBundle(bundle, produccion, desarrollo));
-    else verificaciones.push({ nombre: "Bundle de JavaScript", ok: false, detalle: "El AAB no trae base/assets/index.android.bundle." });
+    else verificaciones.push({ nombre: "Bundle de JavaScript", ok: false, detalle: `El ${formato.toUpperCase()} no trae ${rutaBundle}.` });
 
     const resultado: ResultadoAab = {
+      formato,
       archivo: nombre,
       url: `${ctx.urlSalida}/builds/android/${encodeURIComponent(nombre)}`,
       bytes: bytes.length,
@@ -602,7 +741,7 @@ export class ConstructorDeAab {
       verificaciones,
       fecha: Date.now(),
     };
-    await writeFile(join(destinoDir, nombre.replace(/\.aab$/, ".json")), `${JSON.stringify(resultado, null, 2)}\n`);
+    await writeFile(join(destinoDir, nombre.replace(/\.(aab|apk)$/, ".json")), `${JSON.stringify(resultado, null, 2)}\n`);
 
     // 7. La versión nueva queda en la sesión como un cambio de la persona, sin
     // commitear: el próximo build parte de ahí y no reusa el versionCode.

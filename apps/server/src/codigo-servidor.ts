@@ -1,4 +1,4 @@
-import { HERRAMIENTAS_DE_TELEFONO } from "@orq/tools";
+import { HERRAMIENTAS_DE_R2, HERRAMIENTAS_DE_TELEFONO } from "@orq/tools";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
@@ -46,6 +46,8 @@ export const HERRAMIENTAS_DE_CODIGO = new Set<string>([
   "probar_servicio",
   // Depurar la app móvil en el teléfono: sólo se registran si hay adb.
   ...HERRAMIENTAS_DE_TELEFONO,
+  // Verificar lo subido al bucket de R2 del proyecto.
+  ...HERRAMIENTAS_DE_R2,
 ]);
 
 /** Pasado esto, un arriendo se considera abandonado: un turno no dura tanto. */

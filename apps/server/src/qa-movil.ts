@@ -119,6 +119,12 @@ export interface PuertosDeApp {
   dormir(ms: number): Promise<void>;
   /** El reloj, en ms: las esperas se cuentan con él y no en vueltas (leer el árbol tarda ~4 s en un teléfono real). */
   ahora(): number;
+  /**
+   * Si la corrida que pidió los pasos ya se detuvo. Sin esto una secuencia
+   * seguía tocando el teléfono con el chat ya cerrado: el turno había
+   * terminado y el agente no iba a leer nunca lo que pasaba.
+   */
+  cancelada?(): boolean;
 }
 
 /** «abajo» es ver lo que está más abajo: el dedo va hacia arriba. */
@@ -158,7 +164,15 @@ export async function ejecutarPasos(
     return { ok: false, bitacora, pantalla: resumirPantalla(nodos), fallo: `Paso ${i + 1} (${describir(p)}): ${motivo}` };
   };
 
+  const detenida = (i: number, p: PasoDeApp) => ({
+    ok: false,
+    bitacora,
+    pantalla: "(no se volvió a leer: la corrida se detuvo)",
+    fallo: `Paso ${i + 1} (${describir(p)}): la corrida se detuvo; no se tocó nada más.`,
+  });
+
   for (const [i, p] of pasos.entries()) {
+    if (puertos.cancelada?.()) return detenida(i, p);
     const toca = p.accion === "tocar_texto" || p.accion === "escribir" || p.accion === "tecla" || p.accion === "deslizar";
     // Antes de cada toque: si la app ya no está al frente, lo que hay debajo del dedo es de la persona.
     if (toca && !(await puertos.enFrente())) {
@@ -185,6 +199,7 @@ export async function ejecutarPasos(
         let anterior: number | null = null;
         let quieto = false;
         for (;;) {
+          if (puertos.cancelada?.()) return detenida(i, p);
           const r = ubicarNodo(await leer(), { texto: p.texto, n: 1, exacto: p.exacto });
           // Visible en dos lecturas seguidas en el mismo lugar: ya no se está moviendo.
           if (r.ok && anterior != null && Math.abs(r.y - anterior) < 0.005) {

@@ -511,6 +511,29 @@ export function registrarRutasDeCodigo(app: FastifyInstance, deps: { store: Stor
     }
   });
 
+  /** Borra builds viejos de la salida: por nombre o conservando los últimos N. El más reciente no se borra. */
+  app.post("/api/repos/:repoId/servicios/:servicioId/aab/eliminar", async (request, reply) => {
+    const { repoId, servicioId } = request.params as { repoId: string; servicioId: string };
+    const cuerpo = z
+      .union([
+        z.object({ archivos: z.array(z.string().min(1).max(200)).min(1).max(100) }),
+        z.object({ conservar: z.number().int().min(1).max(50) }),
+      ])
+      .safeParse(request.body);
+    if (!cuerpo.success) return invalid(reply, cuerpo.error);
+    const repo = conRepo(repoId);
+    if (!repo) {
+      reply.code(404);
+      return { error: "No existe el repo." };
+    }
+    try {
+      return await runtime.aab.eliminar(`${repoId}:${servicioId}`, runtime.contextoAab(repo, servicioId), cuerpo.data);
+    } catch (error) {
+      reply.code(409);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   app.get("/api/repos/:repoId/servicios/:servicioId/aab/trabajo", async (request) => {
     const { repoId, servicioId } = request.params as { repoId: string; servicioId: string };
     return { trabajo: runtime.aab.trabajo(`${repoId}:${servicioId}`) };
@@ -519,7 +542,12 @@ export function registrarRutasDeCodigo(app: FastifyInstance, deps: { store: Stor
   app.post("/api/repos/:repoId/servicios/:servicioId/aab", async (request, reply) => {
     const { repoId, servicioId } = request.params as { repoId: string; servicioId: string };
     const cuerpo = z
-      .object({ version: z.string().regex(/^\d+\.\d+\.\d+$/), versionCode: z.number().int().positive().max(2_100_000_000), incluirCambios: z.boolean().default(false) })
+      .object({
+        version: z.string().regex(/^\d+\.\d+\.\d+$/),
+        versionCode: z.number().int().positive().max(2_100_000_000),
+        incluirCambios: z.boolean().default(false),
+        formato: z.enum(["aab", "apk"]).default("aab"),
+      })
       .safeParse(request.body);
     if (!cuerpo.success) return invalid(reply, cuerpo.error);
     const repo = conRepo(repoId);
@@ -1163,6 +1191,20 @@ export function registrarRutasDeCodigo(app: FastifyInstance, deps: { store: Stor
     }
     try {
       return await runtime.crearMejorador(companyId);
+    } catch (error) {
+      return fallo(reply, error);
+    }
+  });
+
+  /** El QA de la app móvil: barre una funcionalidad en el teléfono. Un click, una vez por empresa. */
+  app.post("/api/companies/:companyId/qa-movil", async (request, reply) => {
+    const { companyId } = request.params as { companyId: string };
+    if (!store.getCompany(companyId)) {
+      reply.code(404);
+      return { error: "No existe la empresa." };
+    }
+    try {
+      return await runtime.crearQaMovil(companyId);
     } catch (error) {
       return fallo(reply, error);
     }

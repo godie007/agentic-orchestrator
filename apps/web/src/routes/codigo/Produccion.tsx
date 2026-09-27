@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, CircleX, Download, GitCommitHorizontal, KeyRound, Loader2, Package, ShieldCheck } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleX, Download, GitCommitHorizontal, KeyRound, Loader2, Package, ShieldCheck, Trash2 } from "lucide-react";
 import { api, type ResultadoAab, type ServicioConEstado, type VerificacionAab } from "../../api.js";
-import { ConfirmDialog, relativeTime } from "../../ui/index.js";
+import { ConfirmDialog, relativeTime, useToast } from "../../ui/index.js";
 
 /**
- * El AAB de producción de la app móvil, a un clic y verificado (ver
- * `apps/server/src/aab.ts`). La pantalla muestra **antes** de construir todo lo
- * que decide qué sale —de qué commit, con qué `.env`, con qué firma, qué
- * versión— porque un AAB se sube a Play y no se deshace.
+ * El build de producción de la app móvil, a un clic y verificado (ver
+ * `apps/server/src/aab.ts`): el AAB para Google Play o el APK para instalar
+ * directo. La pantalla muestra **antes** de construir todo lo que decide qué
+ * sale —de qué commit, con qué `.env`, con qué firma, qué versión— porque un
+ * build de producción que llega a un teléfono no se deshace.
  */
 export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado }) {
   const queryClient = useQueryClient();
@@ -25,6 +26,8 @@ export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado
   const [version, setVersion] = useState("");
   const [versionCode, setVersionCode] = useState("");
   const [incluirCambios, setIncluirCambios] = useState(false);
+  const [formato, setFormato] = useState<"aab" | "apk">("aab");
+  const FORMATO = formato.toUpperCase();
   const [confirmando, setConfirmando] = useState(false);
   // Las sugerencias entran una vez: después manda lo que escribió la persona.
   const inicializado = useRef(false);
@@ -35,8 +38,21 @@ export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado
     setVersionCode(String(plan.sugerida.versionCode));
   }, [plan]);
 
+  const avisar = useToast();
+  // Qué se va a borrar, para confirmarlo con nombre y tamaño antes.
+  const [borrando, setBorrando] = useState<{ pedido: { archivos: string[] } | { conservar: number }; builds: ResultadoAab[] } | null>(null);
+  const [conservar, setConservar] = useState(2);
+  const eliminar = useMutation({
+    mutationFn: (pedido: { archivos: string[] } | { conservar: number }) => api.eliminarBuilds(repoId, s.id, pedido),
+    onSuccess: (r) => {
+      void queryClient.invalidateQueries({ queryKey: clave });
+      avisar(`Se borraron ${r.borrados.length} build(s): ${(r.bytes / 1024 / 1024).toFixed(0)} MB liberados.`, "ok");
+    },
+    onError: (e: Error) => avisar(e.message, "error"),
+  });
+
   const construir = useMutation({
-    mutationFn: () => api.construirAab(repoId, s.id, { version, versionCode: Number(versionCode), incluirCambios }),
+    mutationFn: () => api.construirAab(repoId, s.id, { version, versionCode: Number(versionCode), incluirCambios, formato }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: clave }),
   });
 
@@ -69,13 +85,15 @@ export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado
         <header className="flex items-start gap-3">
           <Package className="mt-0.5 size-6 text-accent" aria-hidden />
           <div>
-            <h2 className="text-[16px] font-semibold text-ink">AAB de producción para Google Play</h2>
+            <h2 className="text-[16px] font-semibold text-ink">
+              {formato === "aab" ? "AAB de producción para Google Play" : "APK de producción para instalar directo"}
+            </h2>
             <p className="text-ink-dim">
               <span className="font-mono">{plan.paquete}</span> · hoy en <b>{plan.version}</b> (versionCode {plan.versionCode})
               {plan.anterior && (
                 <>
                   {" "}
-                  · último AAB: <span className="font-mono">{plan.anterior.archivo.split("/").at(-1)}</span>
+                  · último build: <span className="font-mono">{plan.anterior.archivo.split("/").at(-1)}</span>
                   {plan.anterior.versionCode != null && ` (versionCode ${plan.anterior.versionCode})`}
                 </>
               )}
@@ -89,6 +107,29 @@ export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado
             {a}
           </p>
         ))}
+
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="inline-flex rounded border border-line p-0.5" role="radiogroup" aria-label="Formato">
+            {(["aab", "apk"] as const).map((f) => (
+              <button
+                key={f}
+                type="button"
+                role="radio"
+                aria-checked={formato === f}
+                disabled={construyendo}
+                onClick={() => setFormato(f)}
+                className={`rounded px-3 py-1 text-[12px] font-medium ${formato === f ? "bg-accent text-white" : "text-ink-dim hover:text-ink"}`}
+              >
+                {f.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          <span className="text-[12px] text-ink-faint">
+            {formato === "aab"
+              ? "Lo que se sube a Google Play. Play arma los APK para cada teléfono."
+              : "Un solo archivo que se instala en cualquier Android (fuera de la tienda: un cliente, una prueba). Misma firma y mismas verificaciones que el AAB."}
+          </span>
+        </div>
 
         <section className="grid gap-3 rounded-lg border border-line bg-surface p-4 sm:grid-cols-2">
           <label className="space-y-1">
@@ -105,7 +146,10 @@ export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado
               disabled={construyendo}
             />
             <span className={`text-[11px] ${codeValido ? "text-ink-faint" : "text-danger"}`}>
-              Mínimo {minimo}: Play rechaza uno que no supere al publicado (y uno que se subió y se descartó queda quemado).
+              Mínimo {minimo}:{" "}
+              {formato === "aab"
+                ? "Play rechaza uno que no supere al publicado (y uno que se subió y se descartó queda quemado)."
+                : "Android no instala un APK encima de uno con versionCode mayor."}
             </span>
           </label>
 
@@ -124,7 +168,7 @@ export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado
                 <span>
                   Incluir los {plan.cambiosSinCommitear} cambio(s) sin commitear de la app.{" "}
                   <span className="text-ink-faint">
-                    Sin marcar, el AAB sale del commit: se sabe exactamente de qué código salió. Marcado, de una instantánea del árbol que queda
+                    Sin marcar, el {FORMATO} sale del commit: se sabe exactamente de qué código salió. Marcado, de una instantánea del árbol que queda
                     registrada.
                   </span>
                 </span>
@@ -164,7 +208,7 @@ export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado
             className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {construyendo ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Package className="size-4" aria-hidden />}
-            {construyendo ? trabajo.paso : `Generar AAB ${version} (${versionCode})`}
+            {construyendo ? trabajo.paso : `Generar ${FORMATO} ${version} (${versionCode})`}
           </button>
           {construyendo && <span className="text-ink-faint">desde {relativeTime(trabajo.desde)}</span>}
           {construir.error && <span className="text-danger">{(construir.error as Error).message}</span>}
@@ -189,14 +233,47 @@ export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado
 
         {plan.historial.length > 0 && (
           <section className="space-y-1.5">
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">Builds anteriores</h3>
-            {plan.historial.map((h) => (
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">
+                Builds anteriores · {plan.historial.length} · {(plan.historial.reduce((t, h) => t + h.bytes, 0) / 1024 / 1024).toFixed(0)} MB
+              </h3>
+              <span className="flex-1" />
+              {plan.historial.length > 1 && (
+                <>
+                  <label className="flex items-center gap-1 text-[12px] text-ink-dim">
+                    conservar los últimos
+                    <select
+                      value={conservar}
+                      onChange={(e) => setConservar(Number(e.target.value))}
+                      className="h-6 rounded border border-line bg-surface px-1 text-[12px]"
+                    >
+                      {[1, 2, 3, 5, 10].map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    disabled={construyendo || eliminar.isPending || plan.historial.length <= conservar}
+                    onClick={() => setBorrando({ pedido: { conservar }, builds: plan.historial.slice(conservar) })}
+                    title={construyendo ? "Hay un build en curso: se compara contra este historial" : "Borra el archivo y su registro de los builds más viejos"}
+                    className="flex items-center gap-1 rounded border border-line px-2 py-0.5 text-[12px] text-ink-dim hover:border-danger/60 hover:text-danger disabled:opacity-40"
+                  >
+                    <Trash2 className="size-3.5" aria-hidden /> Borrar los anteriores
+                  </button>
+                </>
+              )}
+            </div>
+            {plan.historial.map((h, i) => (
               <div key={h.archivo} className="flex items-center gap-2 rounded border border-line px-2 py-1.5">
                 {h.verificaciones.some((v) => v.ok === false) ? (
                   <CircleX className="size-3.5 text-danger" aria-hidden />
                 ) : (
                   <ShieldCheck className="size-3.5 text-ok" aria-hidden />
                 )}
+                <span className="rounded bg-canvas px-1 font-mono text-[10px] text-ink-dim">{(h.formato ?? "aab").toUpperCase()}</span>
                 <span className="font-mono">{h.version}</span>
                 <span className="text-ink-faint">({h.versionCode})</span>
                 <span className="font-mono text-[11px] text-ink-faint">{h.commit.slice(0, 8)}</span>
@@ -205,6 +282,20 @@ export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado
                 <a href={h.url} className="flex items-center gap-1 text-accent hover:underline">
                   <Download className="size-3.5" aria-hidden /> {(h.bytes / 1024 / 1024).toFixed(1)} MB
                 </a>
+                <button
+                  type="button"
+                  disabled={i === 0 || construyendo || eliminar.isPending}
+                  onClick={() => setBorrando({ pedido: { archivos: [h.archivo] }, builds: [h] })}
+                  title={
+                    i === 0
+                      ? "El más reciente no se borra: el próximo build se compara contra él (versionCode y certificado)"
+                      : `Borrar ${h.archivo}`
+                  }
+                  aria-label={`Borrar ${h.archivo}`}
+                  className="rounded p-1 text-ink-faint hover:text-danger disabled:opacity-30 disabled:hover:text-ink-faint"
+                >
+                  <Trash2 className="size-3.5" aria-hidden />
+                </button>
               </div>
             ))}
           </section>
@@ -212,8 +303,33 @@ export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado
       </div>
 
       <ConfirmDialog
+        abierto={borrando != null}
+        titulo={`¿Borrar ${borrando?.builds.length ?? 0} build(s)?`}
+        detalle={
+          <div className="space-y-1.5">
+            <p>
+              Se borran de la salida, con su registro, y no hay papelera (
+              {((borrando?.builds.reduce((t, h) => t + h.bytes, 0) ?? 0) / 1024 / 1024).toFixed(0)} MB):
+            </p>
+            <ul className="max-h-40 overflow-auto font-mono text-[12px]">
+              {borrando?.builds.map((h) => (
+                <li key={h.archivo}>{h.archivo}</li>
+              ))}
+            </ul>
+            <p className="text-ink-faint">El más reciente se conserva siempre. Lo que ya subiste a Play sigue en Play.</p>
+          </div>
+        }
+        confirmar="Borrar"
+        onConfirmar={() => {
+          if (borrando) eliminar.mutate(borrando.pedido);
+          setBorrando(null);
+        }}
+        onCancelar={() => setBorrando(null)}
+      />
+
+      <ConfirmDialog
         abierto={confirmando}
-        titulo={`¿Generar el AAB de producción ${version} (${versionCode})?`}
+        titulo={`¿Generar el ${FORMATO} de producción ${version} (${versionCode})?`}
         detalle={
           <div className="space-y-1.5">
             <p>
@@ -221,10 +337,10 @@ export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado
               {plan.entorno?.archivo.split("/").at(-1)} y firmado con tu clave de subida. Tarda varios minutos.
             </p>
             <p>Al terminar, app.json de la sesión queda en la versión nueva, sin commitear: commitealo con el release.</p>
-            <p>El AAB no se sube a Play: lo descargás y lo subís vos.</p>
+            <p>{formato === "aab" ? "El AAB no se sube a Play: lo descargás y lo subís vos." : "El APK no se instala solo: lo descargás y lo compartís o instalás vos."}</p>
           </div>
         }
-        confirmar="Generar AAB"
+        confirmar={`Generar ${FORMATO}`}
         onConfirmar={() => {
           setConfirmando(false);
           construir.mutate();
@@ -237,12 +353,18 @@ export function Produccion({ repoId, s }: { repoId: string; s: ServicioConEstado
 
 function ResultadoDelBuild({ r }: { r: ResultadoAab }) {
   const falla = r.verificaciones.some((v) => v.ok === false);
+  const apk = r.formato === "apk";
   return (
     <div className={`space-y-2 rounded-lg border p-3 ${falla ? "border-danger/50 bg-danger/5" : "border-ok/50 bg-ok/5"}`}>
       <div className="flex items-center gap-2">
         {falla ? <CircleX className="size-5 text-danger" aria-hidden /> : <CheckCircle2 className="size-5 text-ok" aria-hidden />}
         <span className="font-semibold text-ink">
-          {falla ? "El AAB no pasó la verificación: no lo subas" : "AAB listo para subir a Play"} · {r.version} ({r.versionCode})
+          {falla
+            ? `El ${apk ? "APK" : "AAB"} no pasó la verificación: no lo ${apk ? "distribuyas" : "subas"}`
+            : apk
+              ? "APK listo para instalar"
+              : "AAB listo para subir a Play"}{" "}
+          · {r.version} ({r.versionCode})
         </span>
         <span className="flex-1" />
         <a href={r.url} className="flex items-center gap-1 rounded bg-accent px-2 py-1 text-[12px] font-medium text-white hover:opacity-90">

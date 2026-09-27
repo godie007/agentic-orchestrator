@@ -9,6 +9,15 @@ El `README.md` explica **qué hace** el producto y por qué está diseñado así
 (tiers, memoria, convergencia, seguridad). Este archivo cubre lo operativo y los
 invariantes que no se ven leyendo un solo archivo.
 
+**La documentación técnica vive en `orquestador-obsidian/`** (bóveda de
+Obsidian; `Inicio.md` es el mapa y cada nota nombra el archivo y el símbolo del
+que sale). Consultala antes de trabajar sobre un área, y **si modificás algo,
+actualizá en el mismo cambio las notas que lo describen** (la capacidad, la
+referencia de API, esquemas, eventos o herramientas, las variables de entorno,
+las trampas). Seguí `00-Meta/Convenciones de documentación.md`: frontmatter,
+`#` igual al nombre, línea en blanco antes de cada encabezado, enlaces por
+nombre y ningún secreto.
+
 ## Comandos
 
 ```bash
@@ -1697,6 +1706,20 @@ puede crear datos reales—: lo decide `detectarProduccion` con los
 tipo móvil) o una variable `*_ENV=production`, y el motivo nombra las
 variables, nunca sus valores. Explorar sí se permite: sólo mira.
 
+**Lo subido se verifica en el bucket, no en la respuesta** (`r2_listar`,
+`r2_objetos`: `packages/tools/src/codigo/r2.ts` + `apps/server/src/r2.ts`). Es
+`inspeccionar_medio` aplicado al almacenamiento: que la app diga "10 fotos
+subidas" no prueba que estén en R2, ni que no pesen 0 bytes, ni que un
+`image/jpeg` no sea un PNG. `r2_objetos` verifica hasta 20 claves por llamada
+—un lote entero en una vuelta, por lo del costo cuadrático de un turno
+delegado— y saca el tipo **real** de los primeros bytes (un `Range` de 32).
+Sin SDK: R2 habla S3 y S3 es HTTP con SigV4, firmado con `crypto` (`firmarS3`,
+fijado con los vectores de ejemplo de AWS). Las credenciales son las `R2_*` del
+`.env` del servicio (el mismo que levanta la vista previa), se leen en el
+momento y **no salen del servidor**. Sólo lectura y sólo staging: con un
+marcador de producción de cualquier servicio del repo en el entorno, no se
+consulta.
+
 **Una herramienta nueva tiene que llegar al agente que ya existe.** El
 Mejorador (el agente del chat) se crea una vez, y `crearMejorador` le sumaba
 herramientas sólo si alguien lo volvía a crear: el de INSPIA se quedó sin las
@@ -1758,6 +1781,26 @@ sha256, certificado, verificaciones), **no** marcado como generado: un agente no
 lo puede borrar. Si todo pasa, `app.json` de la sesión queda con la versión
 nueva **sin commitear** —la persona la commitea con el release— y sólo si nadie
 lo tocó durante el build. Subir a Play sigue siendo de la persona.
+
+**El mismo camino arma un APK de producción** (`formato: "apk"`, para instalar
+fuera de la tienda): `assembleRelease` en vez de `bundleRelease`, y el resto
+—copia exacta, `.env.prod`, versión, verificaciones— es el mismo código. Dos
+cosas cambian y no son de forma: el manifiesto de un APK es XML binario y se lee
+con `aapt2 dump badging` (`parsearBadging`), y la firma de un APK moderno es
+**v2/v3, que `keytool -jarfile` no ve** —contesta "no firmado" sobre un APK bien
+firmado—, así que va `apksigner verify --print-certs` (`parsearApksigner`, con la
+huella en el formato de keytool para comparar un APK contra un AAB anterior).
+Las dos salen de las build-tools del SDK; sin ellas el APK no se arma, porque
+entregarlo sin verificar es justo lo que esto evita. Con splits por ABI se
+entrega el universal.
+
+**Los builds viejos se borran desde la misma pantalla, menos el último**
+(`ConstructorDeAab.eliminar`: por nombre o "conservar los últimos N"; archivo y
+`.json` juntos). El más reciente es el "anterior" del próximo build —de ahí salen
+el `versionCode` mínimo y el certificado contra el que se compara—, así que
+borrarlo le sacaría al siguiente las dos verificaciones que evitan un rechazo de
+Play. Sólo se aceptan nombres del historial (no es una vía para borrar rutas) y
+nada se borra con un build en curso.
 
 **El chat tiene conversaciones** (`foco.conversacionId`). Cada pedido es una
 corrida nueva y el agente arranca sin memoria, así que los pedidos anteriores

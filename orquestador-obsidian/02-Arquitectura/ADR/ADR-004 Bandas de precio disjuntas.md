@@ -4,7 +4,7 @@ tags: [adr, arquitectura]
 
 # ADR-004 Bandas de precio disjuntas
 
-**Estado:** aceptada
+**Estado:** aceptada · acotada: las bandas valen para catálogos heterogéneos con precio (OpenRouter). Los proveedores de Claude (`anthropic`, `claude-sesion`, `claude-code`) y `opencode` resuelven el tier por un **mapa curado** (`resolverTierEstatico`, `packages/llm/src/modelos-claude.ts`): con precios reales Haiku y Sonnet caerían los dos en `standard`. Ver [[Capa LLM y tiers]].
 
 ## Contexto
 

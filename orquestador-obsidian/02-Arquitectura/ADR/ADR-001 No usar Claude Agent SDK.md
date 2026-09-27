@@ -5,7 +5,7 @@ aliases: [Agent SDK, Suscripción de Claude, Tool Runner, Managed Agents]
 
 # ADR-001 No usar Claude Agent SDK
 
-**Estado:** aceptada · *revisada tras verificar la documentación vigente*
+**Estado:** aceptada · *revisada tras verificar la documentación vigente* · complementada por [[ADR-018 Los CLI de suscripción reciben el puente MCP del org]] (un turno se puede delegar al CLI de una suscripción sin ceder la organización)
 
 ## Contexto
 
@@ -125,8 +125,10 @@ y el segundo es peor para este producto:
 ## Consecuencias
 
 ### A favor
-- Cinco proveedores intercambiables (`openrouter`, `anthropic`, `openai`,
-  `ollama`, `nvidia`), con Ollama a costo cero.
+- Ocho proveedores intercambiables (`providerIdSchema`: `openrouter`,
+  `anthropic`, `openai`, `ollama`, `nvidia`, `claude-sesion`, `claude-code`,
+  `opencode`), con Ollama a costo cero y dos suscripciones que no facturan por
+  token.
 - **Cada paso se puede instrumentar**, que es lo que hace posible el organigrama
   animado, el timeline con replay y `check_activity`. Ninguna de las opciones 2,
   3 y 4 expone las iteraciones internas del loop con este detalle.

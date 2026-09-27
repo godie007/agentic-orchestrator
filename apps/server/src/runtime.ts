@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import {
   MEJORADOR_DE_CODIGO,
+  QA_MOVIL,
   argvATexto,
   argvDeInstalacion,
   validarPaquete,
@@ -41,6 +42,7 @@ import {
   crearHerramientasDeContexto,
   crearHerramientasDeCodigo,
   crearHerramientasDeTelefono,
+  crearHerramientasDeR2,
   type TelefonoStorage,
   hayAislamiento,
   resolverEnWorktree,
@@ -61,6 +63,7 @@ import {
 import { RepoStore, type EventoDeCodigo } from "./repos.js";
 import { Dispositivos, detectarAdb, paqueteDeLaApp, tunelesPara } from "./dispositivos.js";
 import { crearTelefonoStorage } from "./depuracion-movil.js";
+import { crearR2Storage } from "./r2.js";
 import { ConstructorDeAab, type ContextoAab } from "./aab.js";
 import { ServiciosVivos, type EntornoDeArranque, type VistaDeServicio } from "./servicios.js";
 import { ControlDeVersiones } from "./scm.js";
@@ -330,6 +333,13 @@ export class Runtime {
     if (this.dispositivos.disponible) {
       for (const tool of crearHerramientasDeTelefono(this.telefonoStorage(companyId))) tools.register(tool);
     }
+    // R2 se registra siempre, como las de código: sin credenciales, dice cuáles faltan y dónde van.
+    const r2 = crearR2Storage({
+      repos: () => this.store.listRepositorios(companyId),
+      guardarEnSalida: async (nombre, carpeta, bytes) =>
+        (await this.exports.forCompany(companyId).save({ filename: nombre, folder: carpeta, bytes })).path,
+    });
+    for (const tool of crearHerramientasDeR2(r2)) tools.register(tool);
   }
 
   /** adb acotado a la app del repo: lo usan las herramientas de los agentes y el panel de depuración del IDE. */
@@ -370,15 +380,45 @@ export class Runtime {
    * edita—; si no está, el proveedor preferido en su tier más alto.
    */
   async crearMejorador(companyId: string): Promise<Role> {
+    return this.crearAgenteDelChat(companyId, MEJORADOR_DE_CODIGO, (nombre) => HERRAMIENTAS_DE_CODIGO.has(nombre), {
+      proposito: "Escribe y mejora el código.",
+      maxTurns: 20,
+      // El Mejorador va a cualquier departamento que haya; el QA arma "Calidad".
+      cualquierDepartamento: true,
+    });
+  }
+
+  /**
+   * El QA de la app móvil: barre una funcionalidad en el teléfono a pedido.
+   * Sin herramientas que escriben código, así que nunca toma el arriendo: puede
+   * probar mientras el Mejorador corrige.
+   */
+  async crearQaMovil(companyId: string): Promise<Role> {
+    const suyas = new Set<string>(QA_MOVIL.herramientas);
+    return this.crearAgenteDelChat(companyId, QA_MOVIL, (nombre) => suyas.has(nombre), {
+      proposito: "Prueba lo que se construye antes de darlo por bueno.",
+      maxTurns: 30,
+    });
+  }
+
+  /**
+   * Crea (o pone al día) un agente del chat del IDE. Idempotente por nombre:
+   * si ya existe se le suman las herramientas que le falten —una herramienta
+   * nueva no le llegaba a un agente creado antes—. Prefiere `claude-code` con
+   * Opus —la suscripción, y el que mejor edita—; si no está, el proveedor
+   * preferido en su tier más alto.
+   */
+  private async crearAgenteDelChat(
+    companyId: string,
+    preset: { nombre: string; titulo: string; departamento: string; systemPrompt: string },
+    incluye: (nombreDeHerramienta: string) => boolean,
+    opciones: { proposito: string; maxTurns: number; cualquierDepartamento?: boolean },
+  ): Promise<Role> {
     await this.registrarHerramientasDeCodigo(companyId);
     const catalogo = this.store.listTools(companyId);
-    const toolIds = catalogo.filter((tool) => HERRAMIENTAS_DE_CODIGO.has(tool.name)).map((tool) => tool.id);
+    const toolIds = catalogo.filter((tool) => incluye(tool.name)).map((tool) => tool.id);
 
-    // Si ya existe, se lo pone al día: el Mejorador es "todas las herramientas
-    // de código", y una herramienta nueva (instalar_dependencia) no le llegaba.
-    const existente = this.store
-      .listRoles(companyId)
-      .find((role) => role.name === MEJORADOR_DE_CODIGO.nombre);
+    const existente = this.store.listRoles(companyId).find((role) => role.name === preset.nombre);
     if (existente) {
       const faltantes = toolIds.filter((id) => !existente.toolIds.includes(id));
       if (faltantes.length === 0) return existente;
@@ -390,16 +430,16 @@ export class Runtime {
 
     const departamentos = this.store.listDepartments(companyId);
     let departamento =
-      departamentos.find((dep) => dep.name.toLowerCase() === MEJORADOR_DE_CODIGO.departamento.toLowerCase()) ??
-      departamentos[0];
+      departamentos.find((dep) => dep.name.toLowerCase() === preset.departamento.toLowerCase()) ??
+      (opciones.cualquierDepartamento ? departamentos[0] : undefined);
     if (!departamento) {
       departamento = {
         id: ids.department(),
         companyId,
-        name: MEJORADOR_DE_CODIGO.departamento,
-        purpose: "Escribe y mejora el código.",
+        name: preset.departamento,
+        purpose: opciones.proposito,
         parentId: null,
-        position: { x: 120, y: 420 },
+        position: { x: 120 + departamentos.length * 220, y: 420 },
       };
       this.store.saveDepartment(departamento);
     }
@@ -412,9 +452,9 @@ export class Runtime {
       id: ids.role(),
       companyId,
       departmentId: departamento.id,
-      name: MEJORADOR_DE_CODIGO.nombre,
-      title: MEJORADOR_DE_CODIGO.titulo,
-      systemPrompt: MEJORADOR_DE_CODIGO.systemPrompt,
+      name: preset.nombre,
+      title: preset.titulo,
+      systemPrompt: preset.systemPrompt,
       model: {
         providerId,
         modelSlug: conClaudeCode ? "claude-code/opus" : null,
@@ -426,7 +466,7 @@ export class Runtime {
       toolIds,
       authority: "executor",
       reportsTo: null,
-      maxTurns: 20,
+      maxTurns: opciones.maxTurns,
       spendApprovalThresholdUsd: null,
       position: { x: 120 + departamentos.length * 40, y: 560 },
     };
@@ -1243,6 +1283,7 @@ export class Runtime {
     if (input.foco) {
       const rol = this.store.listRoles(company.id).find((r) => r.id === input.foco?.rolId);
       if (rol?.name === MEJORADOR_DE_CODIGO.nombre) await this.crearMejorador(company.id);
+      if (rol?.name === QA_MOVIL.nombre) await this.crearQaMovil(company.id);
     }
     const config: CompanyConfig = {
       company,

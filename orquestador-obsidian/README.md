@@ -9,11 +9,16 @@ ese caso perdés el grafo y los enlaces `[[...]]` navegables.
 **Empezá por [[Inicio]].**
 
 ```
-├── Inicio.md              el MOC principal
+├── Inicio.md              el mapa principal
 ├── 00-Meta/               cómo se escribe y se lee esta documentación
 ├── 01-Producto/           qué es, para quién, en qué estado
-├── 02-Arquitectura/       cómo está construido y por qué (+ ADR/)
+├── 02-Arquitectura/       cómo está construido y por qué (+ ADR/, Proveedores LLM/, Pantallas/)
 ├── 03-Capacidades/        qué sabe hacer el sistema
+│   ├── Organización/      roles, coordinación, aprobaciones, memoria, entregables
+│   ├── Producción/        documentos, deck, video, audio, imágenes
+│   ├── Código/            repos, sesiones, herramientas de código, IDE, chat
+│   ├── Móvil/             teléfono, espejo, depuración, QA, builds Android, R2
+│   └── Plataforma/        herramientas, MCP, proyectos, misiones, trazas
 ├── 04-Casos-de-uso/       recorridos completos de punta a punta
 ├── 05-Operación/          instalar, configurar, correr, diagnosticar
 ├── 06-Referencia/         tablas para consultar, no para leer
@@ -22,5 +27,5 @@ ese caso perdés el grafo y los enlaces `[[...]]` navegables.
 
 Esta bóveda no reemplaza al `README.md` de la raíz (pitch del producto) ni a
 `CLAUDE.md` (instrucciones para agentes de código): los expande y los estructura.
-**Cuando haya conflicto, manda el código** — cada página de arquitectura nombra
-los archivos fuente de los que sale.
+**Cuando haya conflicto, manda el código** — cada nota técnica nombra los
+archivos fuente de los que sale.

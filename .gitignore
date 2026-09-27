@@ -24,3 +24,8 @@ npm-debug.log*
 .vite/
 *.tsbuildinfo
 .playwright-mcp/
+
+# Obsidian: el plugin Local REST API guarda su API key y su clave privada en data.json;
+# workspace.json es el estado de la ventana de cada persona.
+orquestador-obsidian/.obsidian/plugins/
+orquestador-obsidian/.obsidian/workspace.json
